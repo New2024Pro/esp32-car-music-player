@@ -82,3 +82,4 @@ TEST(names_match_apostrophe_variants) {
   CHECK(!namesMatch("", "x"));
   CHECK(namesMatch("Saunder`s AirPods Pro", "saunder's airpods pro") == false);  // case-sensitive
 }
+

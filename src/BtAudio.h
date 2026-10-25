@@ -33,3 +33,4 @@ class BtAudio {
   bool havePeer_ = false;
   static BtAudio* inst_;
 };
+

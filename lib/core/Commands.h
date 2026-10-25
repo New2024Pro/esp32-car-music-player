@@ -29,3 +29,4 @@ struct StateSnapshot {
   uint32_t minFreeHeap = 0;
   int resetReason = 0;
 };
+

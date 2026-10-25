@@ -38,3 +38,4 @@ TEST(jsonEscape_valid_json_strings) {
   CHECK_EQ(jsonEscape(std::string("a\x01" "b", 3)), std::string("a\\u0001b"));
   CHECK_EQ(jsonEscape("\xC3\xA9"), std::string("\xC3\xA9"));  // UTF-8 passes through
 }
+

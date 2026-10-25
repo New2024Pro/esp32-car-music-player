@@ -83,3 +83,4 @@ inline std::string normalizeName(const std::string& s) {
 inline bool namesMatch(const std::string& want, const std::string& seen) {
   return !want.empty() && normalizeName(want) == normalizeName(seen);
 }
+

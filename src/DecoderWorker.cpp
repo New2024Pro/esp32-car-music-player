@@ -40,11 +40,11 @@ void DecoderWorker::requestStop() {
 
 bool DecoderWorker::waitStopped(uint32_t ms) { return xSemaphoreTake(stopped_, pdMS_TO_TICKS(ms)) == pdTRUE; }
 
-void DecoderWorker::onPcm(libhelix::MP3FrameInfo& info, short* pcm, size_t len, void*) {
+void DecoderWorker::onPcm(MP3FrameInfo& info, short* pcm, size_t len, void*) {
   if (inst_) inst_->handlePcm(info, pcm, len);
 }
 
-void DecoderWorker::handlePcm(libhelix::MP3FrameInfo& info, const short* pcm, size_t len) {
+void DecoderWorker::handlePcm(MP3FrameInfo& info, const short* pcm, size_t len) {
   if (!fmtChecked_) {
     if (info.samprate != 44100 || info.nChans != 2 || info.bitsPerSample != 16) {
       char m[64];

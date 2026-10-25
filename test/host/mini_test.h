@@ -23,3 +23,4 @@ inline int runAll() {
   std::printf("%zu tests, %d failed checks\n", tests().size(), failures());
   return failures() ? 1 : 0;
 }
+

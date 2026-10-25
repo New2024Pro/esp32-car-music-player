@@ -23,10 +23,10 @@ class DecoderWorker {
 
  private:
   static void taskEntry(void* self) { static_cast<DecoderWorker*>(self)->run(); }
-  static void onPcm(libhelix::MP3FrameInfo& info, short* pcm, size_t len, void*);
+  static void onPcm(MP3FrameInfo& info, short* pcm, size_t len, void*);
   void run();
   void playFile(int index);
-  void handlePcm(libhelix::MP3FrameInfo& info, const short* pcm, size_t len);
+  void handlePcm(MP3FrameInfo& info, const short* pcm, size_t len);
   void setError(const char* msg);
 
   RingBuffer* ring_ = nullptr;

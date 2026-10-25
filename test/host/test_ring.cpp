@@ -163,3 +163,4 @@ TEST(drain_stress_no_cross_iteration_reads) {
   consumer.join();
   CHECK(!bad);
 }
+

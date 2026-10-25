@@ -7,3 +7,4 @@ clang++ -std=c++17 -O1 -Wall -Wextra -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH 
 if ($LASTEXITCODE -ne 0) { exit 1 }
 & $exe
 exit $LASTEXITCODE
+
