@@ -27,7 +27,7 @@ static void enqueue(AsyncWebServerRequest* r, Controller& c, Cmd cmd, int arg = 
 }
 
 static std::string stateJson(const StateSnapshot& s) {
-  char b[160];
+  char b[256];
   snprintf(b, sizeof b,
            "{\"state\":\"%s\",\"bt\":\"%s\",\"track\":%d,\"trackCount\":%d,\"volume\":%d,"
            "\"underruns\":%u,\"minFreeHeap\":%u,\"resetReason\":%d,\"error\":\"",

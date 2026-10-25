@@ -30,7 +30,8 @@ class BtAudio {
   std::atomic<bool> expect_{false};
   std::atomic<int> libState_{ESP_A2D_CONNECTION_STATE_DISCONNECTED};
   std::atomic<bool> attempting_{false};
-  bool havePeer_ = false;
+  std::atomic<bool> havePeer_{false};
+  std::atomic<bool> savePeerPending_{false};
   static BtAudio* inst_;
 };
 

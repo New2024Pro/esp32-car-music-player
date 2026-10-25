@@ -34,8 +34,14 @@ static void scanSd(std::string& err) {
   }
   std::vector<std::string> names;
   File root = SD.open("/");
-  for (File e = root.openNextFile(); e; e = root.openNextFile())
-    if (!e.isDirectory()) names.push_back(e.name());
+  for (File e = root.openNextFile(); e; e = root.openNextFile()) {
+    if (!e.isDirectory()) {
+      std::string fname = e.name();
+      if (isTrackName(fname)) {
+        names.push_back(fname);
+      }
+    }
+  }
   tracks = buildTrackList(names);
   if (tracks.empty()) err = "no tracks";
   Serial.printf("[sd] %u tracks\n", (unsigned)tracks.size());

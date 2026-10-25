@@ -9,8 +9,11 @@
 inline char lowerAscii(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 
 // SD root entry -> playable candidate: ends in .mp3 (any case), not a dot file (macOS ._*).
+// Handles potential leading slash from VFS (e.g. "/track.mp3").
 inline bool isTrackName(const std::string& n) {
-  if (n.size() < 5 || n[0] == '.') return false;
+  size_t start = 0;
+  if (!n.empty() && n[0] == '/') start = 1;
+  if (n.size() - start < 5 || n[start] == '.') return false;
   std::string ext = n.substr(n.size() - 4);
   for (auto& c : ext) c = lowerAscii(c);
   return ext == ".mp3";

@@ -22,7 +22,7 @@ void BtAudio::onConnection(esp_a2d_connection_state_t st, void*) {
   Serial.printf("[bt] connection state: %d\n", (int)st);
   if (st == ESP_A2D_CONNECTION_STATE_CONNECTED) {
     s->attempting_ = false;
-    s->savePeer();
+    s->savePeerPending_ = true;  // offload flash write to supervisor task
   }
 }
 
@@ -80,14 +80,20 @@ void BtAudio::supervise() {
   uint32_t backoff = 1000, lastAttempt = millis();
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(250));
+    if (savePeerPending_.exchange(false)) {
+      savePeer();
+    }
     if (libState_ == ESP_A2D_CONNECTION_STATE_CONNECTED) {
       backoff = 1000;
       lastAttempt = millis();
       continue;
     }
     uint32_t since = millis() - lastAttempt;
-    if (attempting_ && since > 15000) attempting_ = false;
-    if (!attempting_ && since > backoff) {
+    if (attempting_ && since > 15000) {
+      attempting_ = false;
+      lastAttempt = millis();
+    }
+    if (!attempting_ && (millis() - lastAttempt) > backoff) {
       lastAttempt = millis();
       backoff = backoff * 2 > 30000 ? 30000 : backoff * 2;
       attempting_ = true;

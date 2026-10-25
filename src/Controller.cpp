@@ -143,6 +143,7 @@ void Controller::pause() {
   if (!ring_->beginDrain(DRAIN_TIMEOUT_MS)) setError("audio callback busy while pausing");  // still muted
   xSemaphoreTake(mu_, portMAX_DELAY);
   play_ = PlayState::Paused;
+  endWaitStart_ = 0;
   xSemaphoreGive(mu_);
 }
 
@@ -179,10 +180,14 @@ void Controller::handle(Command c) {
       if (c.arg < 0 || (size_t)c.arg >= tracks_->size()) setError("bad track index");
       else startTrack(c.arg, +1);
       break;
-    case Cmd::Volume:
-      volume_ = clampVolume(c.arg);
-      bt_->setVolume((uint8_t)volume_);
+    case Cmd::Volume: {
+      int v = clampVolume(c.arg);
+      xSemaphoreTake(mu_, portMAX_DELAY);
+      volume_ = v;
+      xSemaphoreGive(mu_);
+      bt_->setVolume((uint8_t)v);
       break;
+    }
   }
 }
 
