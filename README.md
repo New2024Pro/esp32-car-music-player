@@ -74,3 +74,7 @@ This project aims to replace the smartphone as a car's music source with a small
 To report a head unit, open an issue with the model, the pairing screens you saw, and the serial log (`pio device monitor`). The `[bt]` lines show each pairing and connection step.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
+
+## License
+
+[MIT](LICENSE). Contributions are accepted under the same license.
