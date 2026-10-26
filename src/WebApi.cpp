@@ -28,13 +28,14 @@ static void enqueue(AsyncWebServerRequest* r, Controller& c, Cmd cmd, int arg = 
 }
 
 static std::string stateJson(const StateSnapshot& s, bool scanning) {
-  char b[480];
+  char b[560];
   snprintf(b, sizeof b,
            "{\"state\":\"%s\",\"bt\":\"%s\",\"btScanning\":%s,\"btDevice\":\"%s\",\"pair\":\"%s\",\"pairCode\":\"%06u\","
-           "\"track\":%d,\"trackCount\":%d,\"volume\":%d,\"underruns\":%u,\"minFreeHeap\":%u,\"resetReason\":%d,\"pairMsg\":\"",
+           "\"track\":%d,\"trackCount\":%d,\"pos\":%d,\"dur\":%d,\"shuffle\":%s,\"repeat\":\"%s\",\"volume\":%d,\"underruns\":%u,\"minFreeHeap\":%u,"
+           "\"resetReason\":%d,\"pairMsg\":\"",
            toStr(s.play), toStr(s.bt), scanning ? "true" : "false", jsonEscape(s.btDevice).c_str(), toStr(s.pair),
-           (unsigned)s.pairCode, s.track, s.trackCount, s.volume, (unsigned)s.underruns, (unsigned)s.minFreeHeap,
-           s.resetReason);
+           (unsigned)s.pairCode, s.track, s.trackCount, s.posSec, s.durSec, s.shuffle ? "true" : "false", toStr(s.repeat), s.volume, (unsigned)s.underruns,
+           (unsigned)s.minFreeHeap, s.resetReason);
   return std::string(b) + jsonEscape(s.pairMsg) + "\",\"error\":\"" + jsonEscape(s.error) + "\"}";
 }
 
@@ -80,7 +81,7 @@ bool webApiBegin(Controller& ctl) {
       return r->send(503, "text/plain", "Web UI not uploaded. Run: pio run -t uploadfs");
     AsyncWebServerResponse* res = r->beginResponse(LittleFS, "/index.html.gz", "text/html");
     res->addHeader("Content-Encoding", "gzip");
-    res->addHeader("Cache-Control", "max-age=300");  // reloads skip the busy radio for 5 min
+    res->addHeader("Cache-Control", "no-cache");  // a stale cached page hid UI updates; it is only ~6 KB
     r->send(res);
   });
   server.on("/api/state", HTTP_GET,
@@ -106,6 +107,22 @@ bool webApiBegin(Controller& ctl) {
     if (intParam(r, "v", v, true)) return sendErr(r, 400, "v must be an integer 0-100");
     ctl.setVolumeImmediate(clampVolume(v));
     sendJson(r, 200, "{\"ok\":true}");
+  });
+  server.on("/api/seek", HTTP_ANY, [&ctl](AsyncWebServerRequest* r) {
+    long s = 0;
+    if (intParam(r, "s", s, true) || s < 0) return sendErr(r, 400, "s must be seconds >= 0");
+    enqueue(r, ctl, Cmd::Seek, (int)s);
+  });
+  server.on("/api/shuffle", HTTP_ANY, [&ctl](AsyncWebServerRequest* r) {
+    long on = 0;
+    if (intParam(r, "on", on, true) || (on != 0 && on != 1)) return sendErr(r, 400, "on must be 0 or 1");
+    enqueue(r, ctl, Cmd::Shuffle, (int)on);
+  });
+  // mode: 0 = off, 1 = all, 2 = one
+  server.on("/api/repeat", HTTP_ANY, [&ctl](AsyncWebServerRequest* r) {
+    long m = 0;
+    if (intParam(r, "mode", m, true) || m < 0 || m > 2) return sendErr(r, 400, "mode must be 0, 1 or 2");
+    enqueue(r, ctl, Cmd::Repeat, (int)m);
   });
   server.on("/api/track", HTTP_ANY, [&ctl](AsyncWebServerRequest* r) {
     long i = 0;

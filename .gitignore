@@ -3,3 +3,4 @@
 test/host/*.exe
 
 data/
+include/user_config.h

@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "Commands.h"
 
 inline char lowerAscii(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 
@@ -60,6 +61,44 @@ inline int nextIndex(int cur, size_t total) { return (cur + 1 >= 0 && (size_t)(c
 inline int prevIndex(int cur, size_t total) {
   if (total == 0) return -1;
   return cur > 0 ? cur - 1 : 0;
+}
+
+// Play order: a list of track indices; positions below index into it. Identity when shuffle is
+// off. `rnd(bound)` returns a value in [0, bound).
+// shuffle: `first` (if >= 0) goes to the front so the playing track keeps playing; otherwise a
+// random order whose first track is not `avoid` (no back-to-back repeat when the list reshuffles).
+inline std::vector<int> makeOrder(size_t n, bool shuffle, int first, int avoid,
+                                  const std::function<uint32_t(uint32_t)>& rnd) {
+  std::vector<int> o(n);
+  for (size_t i = 0; i < n; i++) o[i] = (int)i;
+  if (!shuffle || n < 2) return o;
+  for (size_t i = n - 1; i > 0; i--) std::swap(o[i], o[rnd((uint32_t)i + 1)]);
+  if (first >= 0 && (size_t)first < n) {
+    std::swap(o[0], *std::find(o.begin(), o.end(), first));
+  } else if (o[0] == avoid) {
+    std::swap(o[0], o[1 + rnd((uint32_t)n - 1)]);
+  }
+  return o;
+}
+
+inline int orderPosOf(const std::vector<int>& order, int track) {
+  auto it = std::find(order.begin(), order.end(), track);
+  return it == order.end() ? -1 : (int)(it - order.begin());
+}
+
+// Next position, -1 = stop. autoAdvance: the track ended by itself (Repeat::One replays it).
+// Past the end: Off stops, All and One wrap to the start.
+inline int nextPos(int pos, size_t n, Repeat repeat, bool autoAdvance) {
+  if (n == 0) return -1;
+  if (repeat == Repeat::One && autoAdvance && pos >= 0 && (size_t)pos < n) return pos;
+  if (pos + 1 >= 0 && (size_t)(pos + 1) < n) return pos + 1;
+  return repeat == Repeat::Off ? -1 : 0;
+}
+// Previous position: first track stays put unless Repeat::All wraps to the last.
+inline int prevPos(int pos, size_t n, Repeat repeat) {
+  if (n == 0) return -1;
+  if (pos > 0) return pos - 1;
+  return repeat == Repeat::All ? (int)n - 1 : 0;
 }
 
 // First playable index from `start` stepping by dir (+1/-1). No wrap, so at most `total`

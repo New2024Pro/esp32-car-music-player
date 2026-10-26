@@ -12,12 +12,21 @@
 #define AP_SSID "ESP32-Music"
 #define AP_PASS ""
 
-// Initial Bluetooth discovery name. Placeholder value disables pairing.
+// Personal settings (your headphones' name, your car navi's address) live in user_config.h,
+// which git ignores. Copy include/user_config.example.h to include/user_config.h and edit it.
+#if __has_include("user_config.h")
+#include "user_config.h"
+#endif
+
+// Initial Bluetooth target name. Empty: pick the device on the web page (Scan Nearby) instead.
 // Apostrophe variants (` ' and the typographic one iOS uses) match each other.
 #ifndef AIRPODS_NAME
-#define AIRPODS_NAME "Saunders’s AirPods Pro"
+#define AIRPODS_NAME ""
 #endif
 #define AIRPODS_NAME_PLACEHOLDER "CHANGE_ME_AIRPODS_NAME"
+
+// Car navi preset: NAVI_NAME / NAVI_ADDR / NAVI_PIN, set in user_config.h (see the example
+// file). Applied once on first boot: the navi becomes the target and saved peer.
 
 // Name this ESP32 shows in the car navi's device list.
 #define BT_LOCAL_NAME "ESP32 Music"
@@ -28,15 +37,17 @@
 //   - PIN / passkey entry: web UI field or serial "k<digits>" + Enter
 // BT_AUTO_CONFIRM 1 accepts the "same code?" step without waiting (only the target name is
 // ever connected, so this mainly skips a button press).
-#define BT_AUTO_CONFIRM 0
+#define BT_AUTO_CONFIRM 1
 // ESP_BT_IO_CAP_IO (display + yes/no) gives the "same code?" flow on SSP navis.
 // ESP_BT_IO_CAP_IN (keyboard) makes SSP navis show a code to type in here instead.
 #define BT_IO_CAP ESP_BT_IO_CAP_IO
-// 1 = advertise as a smartphone. Try this if the navi refuses or ignores the ESP32.
-#define BT_COD_AS_PHONE 0
+// Bluetooth device class the navi sees. 2 = portable audio player (matches ポータブル機 on Toyota
+// navis), 1 = smartphone (try if the navi still lists the music service as 未サポート),
+// 0 = stack default (no audio bit; the NSZN-W64T showed ポータブル機 未サポート with it).
+#define BT_COD 2
 
 #define PAIRING_TIMEOUT_MS    30000  // user has this long to answer a pairing prompt
-#define BT_CONNECT_TIMEOUT_MS 8000   // page/connect attempt without pairing activity
+#define BT_CONNECT_TIMEOUT_MS 15000  // page + SDP + AVDTP setup; AirPods in pairing mode need >8 s
 #define BT_RECONNECT_MIN_MS   10000  // saved-peer reconnect backoff (car navi boots slower than us)
 #define BT_RECONNECT_MAX_MS   60000
 // Give up auto-reconnect after this many tries (~5 min); the navi appears well within that.

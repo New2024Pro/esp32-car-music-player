@@ -102,6 +102,7 @@ void setup() {
   bool btOk = bt.begin(ring);
   if (!btOk) err = "AIRPODS_NAME not set";
   ctl.begin(worker, bt, ring, tracks, err);
+  bt.setRemoteHandler([](uint8_t key) { ctl.onRemoteKey(key); });  // AirPods / navi buttons
 #if ENABLE_WIFI
   if (!webApiBegin(ctl)) Serial.println("[web] not started");
 #else
@@ -109,7 +110,7 @@ void setup() {
 #endif
   pinMode(0, INPUT_PULLUP);  // BOOT button
   Serial.println("[cmd] BOOT btn: click=play/pause (or confirm pairing) hold=next/scan | Serial: p=play s=pause n=next "
-                 "r=prev +=vol up -=vol down | pairing: y=confirm x=reject k<digits>+Enter=PIN/passkey");
+                 "r=prev +=vol up -=vol down >/<=seek 10s z=shuffle l=repeat | pairing: y=confirm x=reject k<digits>+Enter=PIN/passkey");
 }
 
 void loop() {
@@ -161,6 +162,14 @@ void loop() {
       case 'y': if (!ctl.answerBtPairing(true, "")) Serial.println("[cmd] no pairing prompt to confirm"); break;
       case 'x': if (!ctl.answerBtPairing(false, "")) Serial.println("[cmd] no pairing prompt to reject"); break;
       case 'k': readingCode = true; code.clear(); break;
+      case 'z': ctl.enqueue({Cmd::Shuffle, ctl.snapshot().shuffle ? 0 : 1}); break;
+      case 'l': ctl.enqueue({Cmd::Repeat, ((int)ctl.snapshot().repeat + 1) % 3}); break;  // off > all > one
+      case '>': case '<': {  // seek +/-10 s
+        StateSnapshot s = ctl.snapshot();
+        if (s.posSec < 0) Serial.println("[cmd] nothing to seek");
+        else ctl.enqueue({Cmd::Seek, s.posSec + (c == '>' ? 10 : -10)});
+        break;
+      }
     }
   }
   if (millis() - lastDiag >= 10000) {
@@ -171,9 +180,10 @@ void loop() {
 #else
     int sta = 0;
 #endif
-    Serial.printf("[diag] t=%us play=%s bt=%s pair=%s track=%d/%d vol=%d underruns=%u heap=%u maxBlk=%u minHeap=%u "
-                  "psram=%u phones=%d err=\"%s\"\n",
-                  (unsigned)(millis() / 1000), toStr(s.play), toStr(s.bt), toStr(s.pair), s.track, s.trackCount, s.volume,
+    Serial.printf("[diag] t=%us play=%s bt=%s pair=%s track=%d/%d at=%d/%ds shuf=%d rep=%s vol=%d underruns=%u heap=%u maxBlk=%u "
+                  "minHeap=%u psram=%u phones=%d err=\"%s\"\n",
+                  (unsigned)(millis() / 1000), toStr(s.play), toStr(s.bt), toStr(s.pair), s.track, s.trackCount,
+                  s.posSec, s.durSec, (int)s.shuffle, toStr(s.repeat), s.volume,
                   (unsigned)s.underruns, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)s.minFreeHeap,
                   ESP.getFreePsram(), sta, s.error.c_str());

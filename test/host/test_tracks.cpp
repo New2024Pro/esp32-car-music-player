@@ -83,3 +83,71 @@ TEST(names_match_apostrophe_variants) {
   CHECK(namesMatch("Saunder`s AirPods Pro", "saunder's airpods pro") == false);  // case-sensitive
 }
 
+
+static uint32_t lcg(uint32_t bound) {  // deterministic stand-in for esp_random()
+  static uint32_t x = 12345;
+  x = x * 1103515245u + 12345u;
+  return (x >> 8) % bound;
+}
+
+static bool isPermutation(std::vector<int> o, size_t n) {
+  if (o.size() != n) return false;
+  std::sort(o.begin(), o.end());
+  for (size_t i = 0; i < n; i++)
+    if (o[i] != (int)i) return false;
+  return true;
+}
+
+TEST(makeOrder_identity_without_shuffle) {
+  std::vector<int> o = makeOrder(4, false, 2, -1, lcg);
+  CHECK(o == std::vector<int>({0, 1, 2, 3}));
+  CHECK(makeOrder(0, true, -1, -1, lcg).empty());
+}
+
+TEST(makeOrder_shuffle_is_permutation_with_first_in_front) {
+  for (int round = 0; round < 50; round++) {
+    std::vector<int> o = makeOrder(7, true, 3, -1, lcg);
+    CHECK(isPermutation(o, 7));
+    CHECK_EQ(o[0], 3);
+  }
+}
+
+TEST(makeOrder_reshuffle_avoids_back_to_back_repeat) {
+  for (int round = 0; round < 200; round++) {
+    std::vector<int> o = makeOrder(3, true, -1, 2, lcg);
+    CHECK(isPermutation(o, 3));
+    CHECK(o[0] != 2);
+  }
+}
+
+TEST(makeOrder_shuffle_actually_varies) {
+  bool differs = false;
+  std::vector<int> first = makeOrder(8, true, -1, -1, lcg);
+  for (int round = 0; round < 10 && !differs; round++) differs = makeOrder(8, true, -1, -1, lcg) != first;
+  CHECK(differs);
+}
+
+TEST(orderPosOf_finds_track) {
+  std::vector<int> o = {2, 0, 1};
+  CHECK_EQ(orderPosOf(o, 1), 2);
+  CHECK_EQ(orderPosOf(o, 5), -1);
+}
+
+TEST(nextPos_repeat_modes) {
+  CHECK_EQ(nextPos(0, 3, Repeat::Off, true), 1);
+  CHECK_EQ(nextPos(2, 3, Repeat::Off, true), -1);  // end: stop
+  CHECK_EQ(nextPos(2, 3, Repeat::All, true), 0);   // end: wrap
+  CHECK_EQ(nextPos(1, 3, Repeat::One, true), 1);   // track ended: replay
+  CHECK_EQ(nextPos(1, 3, Repeat::One, false), 2);  // manual Next still moves on
+  CHECK_EQ(nextPos(2, 3, Repeat::One, false), 0);
+  CHECK_EQ(nextPos(-1, 3, Repeat::Off, false), 0);  // nothing played yet
+  CHECK_EQ(nextPos(0, 0, Repeat::All, false), -1);
+}
+
+TEST(prevPos_repeat_modes) {
+  CHECK_EQ(prevPos(2, 3, Repeat::Off), 1);
+  CHECK_EQ(prevPos(0, 3, Repeat::Off), 0);  // stay put
+  CHECK_EQ(prevPos(0, 3, Repeat::All), 2);  // wrap to last
+  CHECK_EQ(prevPos(0, 3, Repeat::One), 0);
+  CHECK_EQ(prevPos(0, 0, Repeat::All), -1);
+}

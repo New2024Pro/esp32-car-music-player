@@ -19,7 +19,7 @@ pio device monitor -b 115200
 ## Before flashing: edit `include/config.h`
 
 - `AP_PASS`: currently empty (open hotspot `ESP32-Music`). Anyone in range can control playback; for use in a parked car set a WPA2 password (>= 8 chars).
-- `AIRPODS_NAME` is set to `Saunder`s AirPods Pro` (backtick as given). The apostrophe variants `` ` ``, `'` and the typographic `’` iOS uses are treated as equal. The rest must match exactly (case-sensitive). If the monitor prints `[bt] discovered "..."` lines that never say `match=1`, copy the printed name into `AIRPODS_NAME`.
+- Personal values go in `include/user_config.h` (copy `include/user_config.example.h`; git ignores it). `AIRPODS_NAME` is the initial target name. The apostrophe variants `` ` ``, `'` and the typographic `’` iOS uses are treated as equal. The rest must match exactly (case-sensitive). If the monitor prints `[bt] discovered "..."` lines that never say `match=1`, copy the printed name into `AIRPODS_NAME`.
 - Pins: verify `PIN_SD_*` against your board's schematic.
 
 ## Wiring (SD card module, 3.3 V, SPI)
@@ -66,7 +66,7 @@ SD card: FAT32, MP3 files in the root, 44.1 kHz stereo only. Put 3-4 files on it
 
 ## Run 3: Toyota car navi pairing (first connection)
 
-Config (`include/config.h`): `BT_LOCAL_NAME` is the name the navi lists; `BT_AUTO_CONFIRM`, `BT_IO_CAP` and `BT_COD_AS_PHONE` are explained there.
+Config (`include/config.h`): `BT_LOCAL_NAME` is the name the navi lists; `BT_AUTO_CONFIRM`, `BT_IO_CAP` and `BT_COD` are explained there.
 
 1. Navi: open the Bluetooth device registration screen (e.g. Setup > Bluetooth > Add device / 機器登録). It becomes discoverable and shows a passkey or PIN.
 2. Phone: join `ESP32-Music`, open `http://192.168.4.1`, tap the device pill > **Scan Nearby**, and select the navi's name (or type it). If the navi already shows a 4-digit PIN (older models), type it into the **Navi PIN** field before tapping **Connect**.
@@ -77,7 +77,7 @@ Config (`include/config.h`): `BT_LOCAL_NAME` is the name the navi lists; `BT_AUT
    You have 30 s (`PAIRING_TIMEOUT_MS`). If no one answers, the prompt is rejected and you can retry from step 2.
 4. Expected: `[bt] PAIRING: authenticated`, then `[bt] connection state: 2`, then playback starts by itself. On the navi, select the Bluetooth audio source.
 5. Reconnection: switch the ignition off and on. The ESP32 retries the saved navi after 2 s, then backs off from 10 s up to 60 s, so it reconnects whenever the navi comes up. Record the time from navi boot to audio.
-6. If pairing fails (`pairing failed (status N)`): the ESP32 deletes its own key for that navi, so the next try pairs from scratch. If the navi still lists `ESP32 Music`, delete that entry on the navi too and retry. If the navi never reacts, set `BT_COD_AS_PHONE 1`, rebuild and retry.
+6. If pairing fails (`pairing failed (status N)`): the ESP32 deletes its own key for that navi, so the next try pairs from scratch. If the navi still lists `ESP32 Music`, delete that entry on the navi too and retry. If the navi never reacts, or lists ポータブル機 as 未サポート, try `BT_COD 1` (smartphone), rebuild and re-register.
 7. Report: navi model, which card appeared (confirm / passkey / pin / show), the serial `[bt]` lines, and the reconnect time.
 
 ## What to send back

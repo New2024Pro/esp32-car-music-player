@@ -19,8 +19,39 @@ class CoexA2DPSource : public BluetoothA2DPSource {
   std::atomic<bool> allowDiscovery{false};
   // Pairing events go here instead of the library's fixed "1234" PIN / silent auto-accept.
   void (*securityHook)(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) = nullptr;
+  // Button presses from the sink (AirPods stem, navi steering wheel / screen): AVRCP key code.
+  static inline void (*remoteHook)(uint8_t keyCode) = nullptr;
+
+  // The library only runs AVRCP as controller. Bring up the target role too, so the sink's
+  // play/pause/next/prev reach us. Must happen before A2DP init, which the library does on
+  // stack-up (event 0 = BT_APP_EVT_STACK_UP, private to the library's .cpp).
+  void bt_av_hdl_stack_evt(uint16_t event, void* p_param) override {
+    if (event == 0) initRemoteControl();
+    BluetoothA2DPSource::bt_av_hdl_stack_evt(event, p_param);
+    // The library leaves us non-connectable. Toyota navis connect *to* the device after
+    // registration ("車載機からの接続に切り替えます") and on every ignition, so accept that.
+    // Not discoverable: the navi already knows our address.
+    if (event == 0) esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+  }
+
+  // Link-level trace for diagnosing head units: which side connected, and why links dropped.
+  void bt_app_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* param) override {
+    if (event == ESP_A2D_CONNECTION_STATE_EVT)
+      Serial.printf("[bt] a2dp link: state=%d disc_reason=%d\n", (int)param->conn_stat.state,
+                    (int)param->conn_stat.disc_rsn);
+    else if (event == ESP_A2D_AUDIO_STATE_EVT)
+      Serial.printf("[bt] a2dp audio: state=%d (2 = streaming)\n", (int)param->audio_stat.state);
+    else if (event == ESP_A2D_AUDIO_CFG_EVT)
+      Serial.println("[bt] a2dp audio config received (SBC)");
+    BluetoothA2DPSource::bt_app_a2d_cb(event, param);
+  }
 
   void bt_app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) override {
+    if (event == ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT)
+      Serial.printf("[bt] acl link up: status=%d handle=%u\n", (int)param->acl_conn_cmpl_stat.stat,
+                    (unsigned)param->acl_conn_cmpl_stat.handle);
+    else if (event == ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT)
+      Serial.printf("[bt] acl link down: reason=0x%02x\n", (unsigned)param->acl_disconn_cmpl_stat.reason);
     switch (event) {
       case ESP_BT_GAP_PIN_REQ_EVT:
       case ESP_BT_GAP_CFM_REQ_EVT:
@@ -57,8 +88,25 @@ class CoexA2DPSource : public BluetoothA2DPSource {
     BluetoothA2DPSource::bt_app_gap_callback(event, param);
   }
 
-  void bt_app_av_state_unconnected_hdlr(uint16_t, void*) override {
-    // Never auto-start 20s baseband page trains from the 10s timer; supervise() controls connection attempts
+  void bt_app_av_state_unconnected_hdlr(uint16_t event, void* param) override {
+    // Never auto-start 20s baseband page trains from the 10s timer; supervise() controls connection attempts.
+    // A connection the navi opened to us arrives here: adopt it like an outgoing one would be.
+    if (event != ESP_A2D_CONNECTION_STATE_EVT) return;
+    esp_a2d_cb_param_t* a2d = static_cast<esp_a2d_cb_param_t*>(param);
+    if (a2d->conn_stat.state != ESP_A2D_CONNECTION_STATE_CONNECTED) return;
+    memcpy(peer_bd_addr, a2d->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
+    set_last_connection(peer_bd_addr);
+    s_a2d_state = APP_AV_STATE_CONNECTED;
+    s_media_state = 0;  // APP_AV_MEDIA_STATE_IDLE (enum private to the library .cpp)
+  }
+
+  // Suspend / restart the A2DP media stream (AVDTP SUSPEND / START), as phones do on pause/play.
+  // The library starts the stream once after connecting and then sits in its STARTED state, which
+  // ignores these acks, so we can drive it from here. Toyota navis drop the whole link when they
+  // send STOP and the source keeps streaming.
+  void setStreaming(bool on) {
+    if (!is_connected()) return;
+    esp_a2d_media_ctrl(on ? ESP_A2D_MEDIA_CTRL_START : ESP_A2D_MEDIA_CTRL_SUSPEND);
   }
 
   void startDiscovery(uint8_t inqLen = 4) {
@@ -78,13 +126,45 @@ class CoexA2DPSource : public BluetoothA2DPSource {
 
   void clearPeer() {
     if (discovery_active) esp_bt_gap_cancel_discovery();
-    if (is_connected()) disconnect();
+    if (is_connected()) {
+      disconnect();
+    } else {
+      // Abort a connect still running in the stack: otherwise it keeps paging for ~30 s and
+      // the stack ignores every new connect request until it gives up.
+      static const esp_bd_addr_t none = {0};
+      if (memcmp(peer_bd_addr, none, ESP_BD_ADDR_LEN) != 0) esp_a2d_source_disconnect(peer_bd_addr);
+    }
     memset(last_connection, 0, ESP_BD_ADDR_LEN);
     memset(peer_bd_addr, 0, ESP_BD_ADDR_LEN);
     s_a2d_state = APP_AV_STATE_UNCONNECTED;
   }
 
  private:
+  static void onAvrcTarget(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t* param) {
+    if (event == ESP_AVRC_TG_CONNECTION_STATE_EVT)
+      Serial.printf("[bt] avrcp remote-control link: %s\n", param->conn_stat.connected ? "up" : "down");
+    else if (event == ESP_AVRC_TG_REMOTE_FEATURES_EVT)
+      Serial.printf("[bt] avrcp remote features: 0x%x\n", (unsigned)param->rmt_feats.feat_mask);
+    // Act on the press; the release that follows carries no new information.
+    if (event == ESP_AVRC_TG_PASSTHROUGH_CMD_EVT && param->psth_cmd.key_state == ESP_AVRC_PT_CMD_STATE_PRESSED &&
+        remoteHook)
+      remoteHook(param->psth_cmd.key_code);
+  }
+
+  void initRemoteControl() {
+    if (esp_avrc_tg_init() != ESP_OK) {
+      Serial.println("[bt] AVRCP target init failed: remote buttons disabled");
+      return;
+    }
+    esp_avrc_tg_register_callback(&CoexA2DPSource::onAvrcTarget);
+    esp_avrc_psth_bit_mask_t cmds = {0};
+    for (esp_avrc_pt_cmd_t c : {ESP_AVRC_PT_CMD_PLAY, ESP_AVRC_PT_CMD_PAUSE, ESP_AVRC_PT_CMD_STOP,
+                                ESP_AVRC_PT_CMD_FORWARD, ESP_AVRC_PT_CMD_BACKWARD, ESP_AVRC_PT_CMD_FAST_FORWARD,
+                                ESP_AVRC_PT_CMD_REWIND})
+      esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &cmds, c);
+    esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &cmds);
+  }
+
   // The library only reads names from the Extended Inquiry Response. Some head units (older
   // navis) send none and put the name in the BDNAME property instead; match those here.
   bool handleResultWithoutEir(esp_bt_gap_cb_param_t* param) {
@@ -135,6 +215,8 @@ class BtAudio {
   uint32_t underruns() const { return underruns_.load(); }
   // Underruns count only while the controller expects audio (playing, prefilled, not draining).
   void expectAudio(bool e) { expect_ = e; }
+  // Pause / resume the Bluetooth audio stream itself (frees the radio while paused).
+  void setStreaming(bool on) { a2dp_.setStreaming(on); }
 
   struct PairInfo {
     PairKind kind = PairKind::None;
@@ -148,6 +230,8 @@ class BtAudio {
   // PIN for legacy pairing, entered before connecting (older navis show it up front). RAM only:
   // once paired, the link key is stored by the Bluetooth stack.
   bool setPin(const std::string& pin);
+  // Receives AVRCP key codes pressed on the sink (Bluetooth stack task: enqueue only).
+  void setRemoteHandler(void (*h)(uint8_t keyCode)) { CoexA2DPSource::remoteHook = h; }
   // Suspends background reconnect paging for `ms` (a phone is joining the Wi-Fi hotspot).
   void quietFor(uint32_t ms) { quietUntil_ = millis() + ms; }
 
@@ -177,11 +261,16 @@ class BtAudio {
   std::string targetName_;
   std::string connectedName_;
   std::vector<DiscoveredBtDevice> discovered_;
+  // Scan matched the target while the stack was still busy with an older connect (which can run
+  // ~60 s and cannot be cancelled): connect to pendingAddr_ once that attempt ends.
+  std::atomic<bool> pendingConnect_{false};
+  esp_bd_addr_t pendingAddr_ = {0};  // guarded by nameMu_
   // Time of the last connect/pairing progress; the attempt timeout counts from here.
   std::atomic<uint32_t> lastProgress_{0};
   // From the first pairing event until authentication completes: allows PAIRING_TIMEOUT_MS.
   std::atomic<bool> pairBusy_{false};
   std::atomic<uint32_t> quietUntil_{0};
+  std::atomic<bool> retrySoon_{false};  // authentication failed: reconnect in ~2 s, not after backoff
   // Background reconnect tries since the last connection or user request.
   std::atomic<uint32_t> reconnectTries_{0};
   // Pairing fields below are guarded by nameMu_.

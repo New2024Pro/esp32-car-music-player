@@ -122,6 +122,10 @@ void BtAudio::onSecurity(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* par
         s->pin_.clear();  // likely wrong; ask again next time
         xSemaphoreGive(s->nameMu_);
         s->clearPairPending(m);
+        // Retry right away with no key: the navi's registration window is short, the normal
+        // backoff (10-60 s) would miss it.
+        s->attempting_ = false;
+        s->retrySoon_ = true;
       }
       break;
     }
@@ -228,12 +232,21 @@ bool BtAudio::onSsid(const char* ssid, esp_bd_addr_t addr, int rssi) {
     }
     xSemaphoreGive(s->nameMu_);
   }
-  bool ok = namesMatch(target, ssid);
-  Serial.printf("[bt] discovered \"%s\" rssi=%d match=%d\n", ssid, rssi, (int)ok);
+  // Same address as the saved peer counts too: a factory-reset AirPods or renamed navi advertises
+  // a new name ("AirPods Pro") but keeps its Bluetooth address.
+  bool ok = namesMatch(target, ssid) ||
+            (s->havePeer_ && memcmp(addr, s->savedPeerAddr_, ESP_BD_ADDR_LEN) == 0);
+  Serial.printf("[bt] discovered \"%s\" %02x:%02x:%02x:%02x:%02x:%02x rssi=%d match=%d\n", ssid, addr[0], addr[1],
+                addr[2], addr[3], addr[4], addr[5], rssi, (int)ok);
   if (ok && s->nameMu_) {
+    s->lastProgress_ = millis();  // the connect starts now, not when the scan did
     xSemaphoreTake(s->nameMu_, portMAX_DELAY);
     s->connectedName_ = ssid;
+    memcpy(s->pendingAddr_, addr, ESP_BD_ADDR_LEN);
     xSemaphoreGive(s->nameMu_);
+    // The library connects right after the scan; if an older attempt still holds the stack that
+    // request is ignored, so supervise() retries once the stack is free.
+    if (s->libState_ == ESP_A2D_CONNECTION_STATE_CONNECTING) s->pendingConnect_ = true;
   }
   return ok;
 }
@@ -280,10 +293,30 @@ bool BtAudio::begin(RingBuffer& ring) {
     Serial.println("[bt] AIRPODS_NAME is the placeholder: pairing disabled.");
     return false;
   }
+#ifdef NAVI_NAME
+  // One-time preset: make the navi the target + saved peer. "preset" remembers which preset was
+  // applied, so a target chosen later on the web page survives reboots.
+  if (p.begin("mp3", false)) {
+    char applied[64] = {0};
+    p.getString("preset", applied, sizeof(applied));
+    if (strcmp(applied, NAVI_NAME) != 0) {
+      const uint8_t addr[ESP_BD_ADDR_LEN] = NAVI_ADDR;
+      p.putString("target_bt", NAVI_NAME);
+      p.putBytes("peer", addr, ESP_BD_ADDR_LEN);
+      p.putString("preset", NAVI_NAME);
+      targetName_ = NAVI_NAME;
+      Serial.printf("[bt] applied navi preset \"%s\"\n", NAVI_NAME);
+    }
+    p.end();
+  }
+#endif
   if (p.begin("mp3", true)) {
     havePeer_ = p.getBytes("peer", savedPeerAddr_, ESP_BD_ADDR_LEN) == ESP_BD_ADDR_LEN;
     p.end();
   }
+#ifdef NAVI_PIN
+  if (namesMatch(targetName_, NAVI_NAME)) pin_ = NAVI_PIN;  // answers the navi's PIN request
+#endif
   a2dp_.set_on_connection_state_changed(&BtAudio::onConnection);
   a2dp_.set_ssid_callback(&BtAudio::onSsid);
   a2dp_.securityHook = &BtAudio::onSecurity;
@@ -298,12 +331,19 @@ bool BtAudio::begin(RingBuffer& ring) {
   esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &iocap, sizeof(iocap));
   esp_bt_pin_code_t noPin = {0};
   esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_VARIABLE, 0, noPin);  // legacy PIN: always ask (PIN_REQ)
-#if BT_COD_AS_PHONE
+#if BT_COD == 1 || BT_COD == 2
   esp_bt_cod_t cod = {};
-  cod.major = ESP_BT_COD_MAJOR_DEV_PHONE;
-  cod.minor = 0x03;  // smartphone
-  cod.service = ESP_BT_COD_SRVC_AUDIO | ESP_BT_COD_SRVC_TELEPHONY;
-  esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
+  if (BT_COD == 1) {
+    cod.major = ESP_BT_COD_MAJOR_DEV_PHONE;
+    cod.minor = 0x03;  // smartphone
+    cod.service = ESP_BT_COD_SRVC_AUDIO | ESP_BT_COD_SRVC_TELEPHONY;
+  } else {
+    cod.major = ESP_BT_COD_MAJOR_DEV_AV;
+    cod.minor = 0x07;  // portable audio
+    cod.service = ESP_BT_COD_SRVC_AUDIO;
+  }
+  esp_bt_gap_set_cod(cod, ESP_BT_INIT_COD);  // overwrite all fields, not OR into the default
+  Serial.printf("[bt] device class: %s\n", BT_COD == 1 ? "smartphone" : "portable audio player");
 #endif
 
   xTaskCreatePinnedToCore(&BtAudio::superviseEntry, "btsup", 4096, this, 1, nullptr, 1);
@@ -352,6 +392,11 @@ void BtAudio::setTargetDevice(const std::string& name) {
   }
   if (!sameTarget) havePeer_ = false;
   reconnectTries_ = 0;
+  // Already streaming to this device: a repeated Connect tap must not tear the link down.
+  if (sameTarget && libState_ == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+    Serial.printf("[bt] already connected to \"%s\"\n", name.c_str());
+    return;
+  }
   a2dp_.clearPeer();
   attempting_ = true;
   if (haveKnownAddr) {
@@ -408,11 +453,28 @@ void BtAudio::supervise() {
     }
     if (libState_ == ESP_A2D_CONNECTION_STATE_CONNECTED) {
       attempting_ = false;
+      pendingConnect_ = false;
       backoff = BT_RECONNECT_MIN_MS;
       nextReconnect = 0;
       continue;
     }
     uint32_t now = millis();
+    if (pendingConnect_) {
+      if (libState_ != ESP_A2D_CONNECTION_STATE_DISCONNECTED || a2dp_.is_discovery_active()) {
+        lastProgress_ = now;  // still waiting for the old attempt; do not time this one out
+        continue;
+      }
+      pendingConnect_ = false;
+      esp_bd_addr_t addr;
+      xSemaphoreTake(nameMu_, portMAX_DELAY);
+      memcpy(addr, pendingAddr_, ESP_BD_ADDR_LEN);
+      xSemaphoreGive(nameMu_);
+      Serial.println("[bt] previous attempt ended -> connecting to the scanned device");
+      lastProgress_ = now;
+      attempting_ = true;
+      a2dp_.connectPeer(addr);
+      continue;
+    }
     // Counted from the last progress (connect start, pairing prompt, answer), not from the scan:
     // a first-time pairing waits on the user reading the code off the navi.
     uint32_t limit = pairBusy_ ? PAIRING_TIMEOUT_MS : BT_CONNECT_TIMEOUT_MS;
@@ -424,6 +486,7 @@ void BtAudio::supervise() {
         a2dp_.clearPeer();
       }
     }
+    if (retrySoon_.exchange(false)) nextReconnect = now + 2000;
     if (havePeer_ && !attempting_ && !a2dp_.is_discovery_active() &&
         libState_ == ESP_A2D_CONNECTION_STATE_DISCONNECTED && reconnectTries_ < BT_RECONNECT_MAX_TRIES &&
         (int32_t)(now - quietUntil_) >= 0) {
@@ -431,7 +494,9 @@ void BtAudio::supervise() {
         nextReconnect = now + backoff;  // link dropped or last attempt failed
       } else if ((int32_t)(now - nextReconnect) >= 0) {
         uint32_t tries = ++reconnectTries_;
-        Serial.printf("[bt] reconnecting to saved peer (try %u/%u, backoff %us)\n", (unsigned)tries,
+        const uint8_t* a = savedPeerAddr_;
+        Serial.printf("[bt] reconnecting to saved peer %02x:%02x:%02x:%02x:%02x:%02x (try %u/%u, backoff %us)\n", a[0],
+                      a[1], a[2], a[3], a[4], a[5], (unsigned)tries,
                       (unsigned)BT_RECONNECT_MAX_TRIES, (unsigned)(backoff / 1000));
         if (tries == BT_RECONNECT_MAX_TRIES)
           Serial.println("[bt] last auto-reconnect try; use the web page or hold BOOT to connect later");

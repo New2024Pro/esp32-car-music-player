@@ -2,11 +2,17 @@
 #include <stdint.h>
 #include <string>
 
-enum class Cmd : uint8_t { Play, Pause, Next, Prev, Volume, Track, BtConnect };
+enum class Cmd : uint8_t { Play, Pause, Next, Prev, Volume, Track, BtConnect, Seek, Shuffle, Repeat };
 struct Command {
   Cmd cmd;
-  int arg;  // Volume: 0..100, Track: index; unused otherwise
+  // Volume: 0..100, Track: index, Seek: seconds into the track, Shuffle: 0/1,
+  // Repeat: (int)Repeat; unused otherwise
+  int arg;
 };
+
+// One: the current track restarts when it ends (manual Next still moves on).
+enum class Repeat : uint8_t { Off, All, One };
+inline const char* toStr(Repeat r) { return r == Repeat::All ? "all" : r == Repeat::One ? "one" : "off"; }
 
 enum class PlayState : uint8_t { Stopped, Playing, Paused };
 enum class BtState : uint8_t { Disconnected, Connecting, Connected };
@@ -43,6 +49,10 @@ struct StateSnapshot {
   std::string btDevice;
   int track = -1;
   int trackCount = 0;
+  bool shuffle = false;
+  Repeat repeat = Repeat::Off;
+  int posSec = -1;  // heard position in the current track; -1 unknown
+  int durSec = -1;  // track length (exact for CBR, estimate for VBR); -1 unknown
   int volume = 50;
   std::string error;
   uint32_t underruns = 0;

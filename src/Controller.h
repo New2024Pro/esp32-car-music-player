@@ -24,6 +24,8 @@ class Controller {
   bool answerBtPairing(bool accept, const std::string& code) { return bt_->answerPairing(accept, code); }
   bool setBtPin(const std::string& pin) { return bt_->setPin(pin); }
   void btQuietFor(uint32_t ms) { bt_->quietFor(ms); }
+  // AVRCP button from the AirPods / navi. Called on the Bluetooth task: enqueues only.
+  void onRemoteKey(uint8_t keyCode);
   StateSnapshot snapshot() const;
   const std::vector<std::string>& tracks() const { return *tracks_; }
 
@@ -33,8 +35,14 @@ class Controller {
   void run();
   void handle(Command c);
   void tick();
-  OpenResult openTrack(int idx);
-  void startTrack(int idx, int dir);
+  OpenResult openTrack(int idx, uint32_t byteOffset = 0);
+  void seek(int sec);
+  void startTrack(int pos, int dir);
+  int currentPos() const;
+  void advance(bool autoAdvance);
+  void setShuffle(bool on);
+  void setRepeat(Repeat r);
+  void saveModes();
   void stopPlayback();
   void pause();
   void resume();
@@ -47,7 +55,12 @@ class Controller {
   QueueHandle_t q_ = nullptr;
   mutable SemaphoreHandle_t mu_ = nullptr;
   PlayState play_ = PlayState::Stopped;
-  int cur_ = -1;
+  int cur_ = -1;  // track index (into tracks_), not order position
+  // Play order (track indices) and modes: controller task only. *Shown_ are the mutex-guarded
+  // copies snapshot() reads.
+  std::vector<int> order_;
+  bool shuffle_ = false, shuffleShown_ = false;
+  Repeat repeat_ = Repeat::Off, repeatShown_ = Repeat::Off;
   int volume_ = 50;
   std::string err_;
   uint32_t endWaitStart_ = 0;  // 0 = not waiting for the ring to play out

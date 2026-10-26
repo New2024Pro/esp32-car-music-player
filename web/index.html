@@ -63,7 +63,14 @@ body{
 .track-info{display:flex;flex-direction:column;gap:4px}
 .track-title{font-size:20px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-0.3px}
 .track-artist{font-size:14px;color:var(--text-sub);font-weight:500}
-.controls{display:flex;justify-content:center;align-items:center;gap:24px;margin-top:4px}
+.controls{display:flex;justify-content:center;align-items:center;gap:14px;margin-top:4px}
+.btn-mode{color:var(--text-sub);position:relative}
+.btn-mode.on{color:var(--accent)}
+.btn-mode .badge{
+  position:absolute;top:4px;right:2px;font-size:9px;font-weight:700;line-height:1;
+  display:none;
+}
+.btn-mode.one .badge{display:block}
 .btn-control{
   background:none;border:none;color:#fff;
   cursor:pointer;display:flex;align-items:center;justify-content:center;
@@ -87,6 +94,10 @@ input[type=range]::-webkit-slider-thumb{
   -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
   background:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);
 }
+.seek-row{display:flex;align-items:center;gap:10px}
+.seek-row span{font-size:12px;color:var(--text-sub);min-width:38px;font-variant-numeric:tabular-nums}
+.seek-row span:last-child{text-align:right}
+input[type=range]:disabled{opacity:0.35}
 .playlist-section{
   background:var(--bg-card);
   backdrop-filter:blur(30px);
@@ -178,7 +189,16 @@ input[type=range]::-webkit-slider-thumb{
       <div class="track-artist" id="curArtist">ESP32 SD Card Player</div>
     </div>
 
+    <div class="seek-row">
+      <span id="posLabel">0:00</span>
+      <input type="range" id="seek" min="0" max="0" value="0" step="1" disabled>
+      <span id="durLabel">--:--</span>
+    </div>
+
     <div class="controls">
+      <button class="btn-control btn-mode" id="btnShuffle" onclick="toggleShuffle()" aria-label="Shuffle">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+      </button>
       <button class="btn-control" onclick="post('/api/prev')">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
@@ -187,6 +207,10 @@ input[type=range]::-webkit-slider-thumb{
       </button>
       <button class="btn-control" onclick="post('/api/next')">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+      </button>
+      <button class="btn-control btn-mode" id="btnRepeat" onclick="cycleRepeat()" aria-label="Repeat">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+        <span class="badge">1</span>
       </button>
     </div>
 
@@ -225,11 +249,25 @@ input[type=range]::-webkit-slider-thumb{
 <script>
 var state = {state:'stopped',track:-1,volume:50}, tracks = [], draggingVol = false, volTimer = null, modalOpen = false;
 var pollTimer = null, fastUntil = 0, shownPair = 'none';
+var seekDragging = false, posAt = Date.now();  // posAt: when state.pos was last set
 function $(id){return document.getElementById(id)}
 function renderPlayIcon(playing){
   $('playIcon').innerHTML = playing
     ? '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'
     : '<polygon points="6 4 20 12 6 20 6 4"/>';
+}
+// fetch + JSON with a timeout. On this radio a request can stall indefinitely; without a timeout
+// the poll chain would wait on it forever and the page would stay on "Loading...".
+function getJson(url, opts, ms){
+  opts = opts || {};
+  var ctl = window.AbortController ? new AbortController() : null;
+  if(ctl) opts.signal = ctl.signal;
+  return new Promise(function(resolve, reject){
+    var t = setTimeout(function(){ if(ctl) ctl.abort(); reject(new Error('timeout')); }, ms || 5000);
+    fetch(url, opts).then(function(r){ return r.json(); }).then(
+      function(j){ clearTimeout(t); resolve(j); },
+      function(e){ clearTimeout(t); reject(e); });
+  });
 }
 function post(url, data){
   var opts = {method:'POST'};
@@ -237,7 +275,7 @@ function post(url, data){
     opts.headers = {'Content-Type':'application/x-www-form-urlencoded'};
     opts.body = data;
   }
-  return fetch(url, opts).then(function(r){return r.json()}).then(function(){
+  return getJson(url, opts).then(function(){
     fastUntil = Date.now() + 3000;
     schedulePoll(150);
   }).catch(function(){});
@@ -270,6 +308,53 @@ function renderPair(s){
   $('pairOk').textContent = needsCode ? 'Pair' : 'Confirm';
   if(needsCode) $('pairInput').focus();
 }
+function fmtTime(s){
+  s = Math.max(0, Math.floor(s));
+  return Math.floor(s / 60) + ':' + ('0' + s % 60).slice(-2);
+}
+// Between polls the position advances locally, so the bar moves every second.
+function renderSeek(){
+  var dur = state.dur > 0 ? state.dur : 0;
+  var pos = state.pos > 0 ? state.pos : 0;
+  if(state.state == 'playing') pos += (Date.now() - posAt) / 1000;
+  if(pos > dur) pos = dur;
+  $('seek').max = dur;
+  $('seek').disabled = dur <= 0;
+  $('durLabel').textContent = dur > 0 ? fmtTime(dur) : '--:--';
+  if(!seekDragging){
+    $('seek').value = pos;
+    $('posLabel').textContent = dur > 0 ? fmtTime(pos) : '0:00';
+  }
+}
+$('seek').oninput = function(){
+  seekDragging = true;
+  $('posLabel').textContent = fmtTime(this.value);
+};
+$('seek').onchange = function(){
+  var v = parseInt(this.value, 10);
+  state.pos = v;
+  posAt = Date.now();
+  seekDragging = false;
+  post('/api/seek?s=' + v);
+};
+function renderModes(){
+  $('btnShuffle').className = 'btn-control btn-mode' + (state.shuffle ? ' on' : '');
+  var r = state.repeat || 'off';
+  $('btnRepeat').className = 'btn-control btn-mode' + (r != 'off' ? ' on' : '') + (r == 'one' ? ' one' : '');
+  $('btnRepeat').setAttribute('aria-label', 'Repeat: ' + r);
+}
+function toggleShuffle(){
+  state.shuffle = !state.shuffle;
+  renderModes();
+  post('/api/shuffle?on=' + (state.shuffle ? 1 : 0));
+}
+// off -> all -> one -> off
+function cycleRepeat(){
+  var next = {off:'all', all:'one', one:'off'}[state.repeat || 'off'];
+  state.repeat = next;
+  renderModes();
+  post('/api/repeat?mode=' + {off:0, all:1, one:2}[next]);
+}
 function answerPair(accept){
   var code = $('pairInput').value.trim();
   if(accept && (state.pair == 'pin' || state.pair == 'passkey') && !/^[0-9]{1,16}$/.test(code)) return;
@@ -284,8 +369,11 @@ function togglePlay(){
   post(wantPlay ? '/api/play' : '/api/pause');
 }
 function pollState(){
-  fetch('/api/state').then(function(r){return r.json()}).then(function(s){
+  getJson('/api/state').then(function(s){
     state = s;
+    posAt = Date.now();
+    renderSeek();
+    renderModes();
     var pill = $('devPill');
     var isConn = s.bt == 'connected';
     pill.className = 'device-pill ' + (isConn ? 'connected' : '');
@@ -316,7 +404,7 @@ function pollState(){
 }
 
 function pollBtDevices(){
-  fetch('/api/bt_devices').then(function(r){return r.json()}).then(function(d){
+  getJson('/api/bt_devices').then(function(d){
     var ul = $('btDevList');
     ul.innerHTML = '';
     if(!d.items || d.items.length === 0){
@@ -344,13 +432,14 @@ function scanBt(){
 }
 
 function loadTracks(offset){
-  fetch('/api/tracks?offset=' + offset + '&limit=50').then(function(r){return r.json()}).then(function(d){
+  getJson('/api/tracks?offset=' + offset + '&limit=50').then(function(d){
     if(offset === 0){ tracks = []; $('trackList').innerHTML = ''; }
     d.items.forEach(function(item){
       tracks[item.i] = item;
       var li = document.createElement('li');
       li.className = 'track-item' + (state.track === item.i ? ' active' : '');
-      li.innerHTML = '<span class="title">' + item.name + '</span><span>&#9654;</span>';
+      li.innerHTML = '<span class="title"></span><span>&#9654;</span>';
+      li.firstChild.textContent = item.name;  // file names are text, not HTML
       li.onclick = function(){
         state.track = item.i;
         state.state = 'playing';
@@ -363,6 +452,8 @@ function loadTracks(offset){
     if(d.offset + d.items.length < d.total && d.items.length > 0){
       loadTracks(d.offset + d.items.length);
     }
+  }).catch(function(){
+    setTimeout(function(){ loadTracks(offset); }, 3000);  // retry until the list arrives
   });
 }
 
@@ -372,7 +463,7 @@ $('vol').oninput = function(){
   $('volLabel').textContent = v + '%';
   if(volTimer) clearTimeout(volTimer);
   volTimer = setTimeout(function(){
-    fetch('/api/volume?v=' + v, {method:'POST'}).then(function(){
+    getJson('/api/volume?v=' + v, {method:'POST'}).then(function(){
       setTimeout(function(){ draggingVol = false; }, 400);
     }).catch(function(){ draggingVol = false; });
   }, 120);
@@ -404,6 +495,7 @@ function saveTarget(){
 
 loadTracks(0);
 pollState();
+setInterval(renderSeek, 1000);
 </script>
 </body>
 </html>
