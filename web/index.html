@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>AirPlay ESP32</title>
+<style>
+:root{
+  --bg-primary: #0a0a0c;
+  --bg-card: rgba(28, 28, 32, 0.75);
+  --bg-card-border: rgba(255, 255, 255, 0.08);
+  --accent: #1db954;
+  --accent-apple: #fa2d48;
+  --text-main: #ffffff;
+  --text-sub: #8e8e93;
+  --radius-lg: 24px;
+  --radius-sm: 12px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",sans-serif;
+  background:radial-gradient(circle at 50% 10%, #1c1c24 0%, var(--bg-primary) 70%);
+  color:var(--text-main);
+  margin:0;
+  padding:20px 16px 40px;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+}
+.app-container{width:100%;max-width:420px;display:flex;flex-direction:column;gap:18px}
+.header{display:flex;justify-content:space-between;align-items:center;padding:4px 4px}
+.header h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-0.4px}
+.device-pill{
+  display:flex;align-items:center;gap:6px;
+  background:rgba(255,255,255,0.06);
+  border:1px solid var(--bg-card-border);
+  padding:6px 12px;border-radius:20px;
+  font-size:12px;color:var(--text-sub);cursor:pointer;
+  transition:all 0.2s ease;
+}
+.device-pill.connected{color:#30d158;background:rgba(48,209,88,0.12);border-color:rgba(48,209,88,0.3)}
+.device-pill .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.now-playing-card{
+  background:var(--bg-card);
+  backdrop-filter:blur(30px);
+  -webkit-backdrop-filter:blur(30px);
+  border:1px solid var(--bg-card-border);
+  border-radius:var(--radius-lg);
+  padding:22px 20px;
+  box-shadow:0 16px 36px rgba(0,0,0,0.5);
+  display:flex;flex-direction:column;gap:18px;
+}
+.album-art{
+  width:100%;aspect-ratio:1/1;
+  background:linear-gradient(135deg,#1f1c2c 0%,#928dab 100%);
+  border-radius:18px;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 12px 28px rgba(0,0,0,0.4);
+  position:relative;overflow:hidden;
+}
+.album-art svg{width:72px;height:72px;fill:rgba(255,255,255,0.75)}
+.track-info{display:flex;flex-direction:column;gap:4px}
+.track-title{font-size:20px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-0.3px}
+.track-artist{font-size:14px;color:var(--text-sub);font-weight:500}
+.controls{display:flex;justify-content:center;align-items:center;gap:24px;margin-top:4px}
+.btn-control{
+  background:none;border:none;color:#fff;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:transform 0.1s ease;padding:8px;
+}
+.btn-control:active{transform:scale(0.88)}
+.btn-play{
+  width:64px;height:64px;border-radius:50%;
+  background:#fff;color:#000;
+  box-shadow:0 8px 24px rgba(255,255,255,0.25);
+}
+.btn-play svg{fill:#000}
+.volume-row{display:flex;align-items:center;gap:12px;margin-top:6px}
+.volume-row svg{width:16px;height:16px;fill:var(--text-sub);flex-shrink:0}
+input[type=range]{
+  -webkit-appearance:none;width:100%;height:6px;
+  background:rgba(255,255,255,0.15);
+  border-radius:3px;outline:none;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+  background:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);
+}
+.playlist-section{
+  background:var(--bg-card);
+  backdrop-filter:blur(30px);
+  -webkit-backdrop-filter:blur(30px);
+  border:1px solid var(--bg-card-border);
+  border-radius:var(--radius-lg);
+  padding:16px 18px;
+  display:flex;flex-direction:column;gap:8px;
+}
+.section-title{font-size:15px;font-weight:600;color:var(--text-sub);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px}
+.track-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto}
+.track-item{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 12px;border-radius:var(--radius-sm);cursor:pointer;
+  transition:background 0.15s ease;font-size:14px;
+}
+.track-item:hover{background:rgba(255,255,255,0.05)}
+.track-item.active{background:rgba(255,255,255,0.12);color:#30d158;font-weight:600}
+.track-item .title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:12px}
+.modal{
+  position:fixed;top:0;left:0;right:0;bottom:0;
+  background:rgba(0,0,0,0.7);backdrop-filter:blur(15px);
+  display:none;align-items:center;justify-content:center;padding:20px;z-index:99;
+}
+.modal.open{display:flex}
+.modal-content{
+  background:#1e1e24;border:1px solid var(--bg-card-border);
+  border-radius:var(--radius-lg);padding:24px;width:100%;max-width:340px;
+  display:flex;flex-direction:column;gap:14px;
+}
+.modal-content h3{margin:0;font-size:18px}
+.modal-content input[type=text]{
+  background:rgba(255,255,255,0.08);border:1px solid var(--bg-card-border);
+  border-radius:8px;padding:12px;color:#fff;font-size:14px;outline:none;
+}
+.modal-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:6px}
+.btn-m{padding:10px 16px;border-radius:8px;font-size:13px;border:none;cursor:pointer}
+.btn-save{background:var(--accent);color:#000;font-weight:600}
+.btn-cancel{background:rgba(255,255,255,0.1);color:#fff}
+.dev-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto}
+.dev-item{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:10px 12px;border-radius:10px;background:rgba(255,255,255,0.06);
+  border:1px solid var(--bg-card-border);cursor:pointer;font-size:13px;
+}
+.dev-item:active{background:rgba(255,255,255,0.15)}
+.dev-rssi{font-size:11px;color:var(--text-sub)}
+.pair-card{
+  display:none;flex-direction:column;gap:10px;padding:16px;border-radius:var(--radius-lg);
+  background:rgba(10,132,255,0.14);border:1px solid rgba(10,132,255,0.5);
+}
+.pair-card.open{display:flex}
+.pair-card .pair-title{font-size:14px;font-weight:600}
+.pair-card .pair-code{font-size:32px;font-weight:700;letter-spacing:6px;text-align:center;font-variant-numeric:tabular-nums}
+.pair-card input{
+  background:rgba(255,255,255,0.08);border:1px solid var(--bg-card-border);border-radius:8px;
+  padding:12px;color:#fff;font-size:20px;letter-spacing:4px;text-align:center;outline:none;
+}
+.pair-card .modal-btns{margin-top:0}
+</style>
+</head>
+<body>
+<div class="app-container">
+  <div class="header">
+    <h1>Music</h1>
+    <div class="device-pill" id="devPill" onclick="openSettings()">
+      <div class="dot"></div>
+      <span id="devName">AirPods</span>
+    </div>
+  </div>
+
+  <div class="pair-card" id="pairCard">
+    <div class="pair-title" id="pairTitle"></div>
+    <div class="pair-code" id="pairCode"></div>
+    <input type="text" id="pairInput" inputmode="numeric" pattern="[0-9]*" maxlength="16" autocomplete="off">
+    <div class="modal-btns" id="pairBtns">
+      <button class="btn-m btn-cancel" onclick="answerPair(false)">Reject</button>
+      <button class="btn-m btn-save" id="pairOk" onclick="answerPair(true)">Confirm</button>
+    </div>
+  </div>
+
+  <div class="now-playing-card">
+    <div class="album-art">
+      <svg viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+    </div>
+
+    <div class="track-info">
+      <div class="track-title" id="curTitle">Loading...</div>
+      <div class="track-artist" id="curArtist">ESP32 SD Card Player</div>
+    </div>
+
+    <div class="controls">
+      <button class="btn-control" onclick="post('/api/prev')">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+      </button>
+      <button class="btn-control btn-play" id="btnPlay" onclick="togglePlay()">
+        <svg width="28" height="28" viewBox="0 0 24 24" id="playIcon"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+      </button>
+      <button class="btn-control" onclick="post('/api/next')">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+      </button>
+    </div>
+
+    <div class="volume-row">
+      <svg viewBox="0 0 24 24"><path d="M7 9v6h4l5 5V4l-5 5H7z"/></svg>
+      <input type="range" id="vol" min="0" max="100" value="50">
+      <span id="volLabel" style="font-size:12px;color:var(--text-sub);min-width:34px;text-align:right">50%</span>
+    </div>
+  </div>
+
+  <div class="playlist-section">
+    <div class="section-title">Tracks on SD</div>
+    <ul class="track-list" id="trackList"></ul>
+  </div>
+</div>
+
+<div class="modal" id="settingsModal">
+  <div class="modal-content">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3>Bluetooth Output</h3>
+      <button class="btn-m btn-cancel" style="padding:6px 10px" onclick="scanBt()" id="scanBtn">Scan Nearby</button>
+    </div>
+    <div style="font-size:12px;color:var(--text-sub)" id="btModalStatus">Status: checking...</div>
+    <ul class="dev-list" id="btDevList"></ul>
+    <p style="font-size:12px;color:var(--text-sub);margin:2px 0 0">Or enter car navi / speaker name:</p>
+    <input type="text" id="targetInput" placeholder="e.g. TOYOTA or Saunders’s AirPods Pro">
+    <p style="font-size:12px;color:var(--text-sub);margin:2px 0 0">Navi PIN, if the pairing screen already shows one (optional):</p>
+    <input type="text" id="pinInput" inputmode="numeric" pattern="[0-9]*" maxlength="16" autocomplete="off" placeholder="e.g. 0000">
+    <div class="modal-btns">
+      <button class="btn-m btn-cancel" onclick="closeSettings()">Close</button>
+      <button class="btn-m btn-save" onclick="saveTarget()">Connect</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var state = {state:'stopped',track:-1,volume:50}, tracks = [], draggingVol = false, volTimer = null, modalOpen = false;
+var pollTimer = null, fastUntil = 0, shownPair = 'none';
+function $(id){return document.getElementById(id)}
+function renderPlayIcon(playing){
+  $('playIcon').innerHTML = playing
+    ? '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'
+    : '<polygon points="6 4 20 12 6 20 6 4"/>';
+}
+function post(url, data){
+  var opts = {method:'POST'};
+  if(data){
+    opts.headers = {'Content-Type':'application/x-www-form-urlencoded'};
+    opts.body = data;
+  }
+  return fetch(url, opts).then(function(r){return r.json()}).then(function(){
+    fastUntil = Date.now() + 3000;
+    schedulePoll(150);
+  }).catch(function(){});
+}
+// Single poll chain: 1 s while connecting/pairing or just after a command, else 4 s.
+function schedulePoll(ms){
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollState, ms);
+}
+function nextPoll(){
+  var fast = Date.now() < fastUntil || state.pair && state.pair != 'none' || state.bt == 'connecting';
+  schedulePoll(fast ? 1000 : 4000);
+}
+function renderPair(s){
+  var kind = s.pair || 'none';
+  $('pairCard').className = 'pair-card' + (kind != 'none' ? ' open' : '');
+  if(kind == shownPair) return;  // keep a half-typed code
+  shownPair = kind;
+  var needsCode = kind == 'pin' || kind == 'passkey';
+  $('pairTitle').textContent =
+    kind == 'confirm' ? 'Pairing with ' + s.btDevice + ': does the navi show this code?' :
+    kind == 'passkey' ? 'Pairing with ' + s.btDevice + ': type the passkey shown on the navi' :
+    kind == 'pin' ? 'Pairing with ' + s.btDevice + ': type the PIN shown on the navi' :
+    kind == 'show' ? 'Pairing with ' + s.btDevice + ': check / enter this code on the navi' : '';
+  $('pairCode').textContent = (kind == 'confirm' || kind == 'show') ? s.pairCode : '';
+  $('pairCode').style.display = (kind == 'confirm' || kind == 'show') ? '' : 'none';
+  $('pairInput').style.display = needsCode ? '' : 'none';
+  $('pairInput').value = '';
+  $('pairBtns').style.display = kind == 'show' ? 'none' : '';
+  $('pairOk').textContent = needsCode ? 'Pair' : 'Confirm';
+  if(needsCode) $('pairInput').focus();
+}
+function answerPair(accept){
+  var code = $('pairInput').value.trim();
+  if(accept && (state.pair == 'pin' || state.pair == 'passkey') && !/^[0-9]{1,16}$/.test(code)) return;
+  post('/api/bt_pair', 'accept=' + (accept ? 1 : 0) + '&code=' + encodeURIComponent(code));
+}
+function togglePlay(){
+  var wantPlay = state.state !== 'playing';
+  state.state = wantPlay ? 'playing' : 'paused';
+  if(wantPlay && state.track < 0 && tracks.length > 0) state.track = 0;
+  renderPlayIcon(wantPlay);
+  if(state.track >= 0 && tracks[state.track]) $('curTitle').textContent = tracks[state.track].name;
+  post(wantPlay ? '/api/play' : '/api/pause');
+}
+function pollState(){
+  fetch('/api/state').then(function(r){return r.json()}).then(function(s){
+    state = s;
+    var pill = $('devPill');
+    var isConn = s.bt == 'connected';
+    pill.className = 'device-pill ' + (isConn ? 'connected' : '');
+    var statusLabel = isConn ? 'Connected' : (s.btScanning ? 'Scanning...' : s.bt);
+    $('devName').textContent = s.btDevice ? (s.btDevice + (isConn ? '' : ' · ' + statusLabel)) : statusLabel;
+    $('btModalStatus').textContent = 'Target: ' + (s.btDevice || 'None') + ' (' + statusLabel + ')' +
+      (s.pairMsg ? ' · ' + s.pairMsg : '');
+    renderPair(s);
+    $('scanBtn').textContent = s.btScanning ? 'Scanning...' : 'Scan Nearby';
+    
+    var title = (s.track >= 0 && tracks[s.track]) ? tracks[s.track].name : (s.state == 'stopped' ? 'Not Playing' : 'Ready');
+    $('curTitle').textContent = title;
+    $('curArtist').textContent = s.error ? ('Error: ' + s.error) : (isConn ? ('Playing on ' + s.btDevice) : 'Tap top-right pill to connect Bluetooth');
+    renderPlayIcon(s.state == 'playing');
+    
+    if(!draggingVol){
+      $('vol').value = s.volume;
+      $('volLabel').textContent = s.volume + '%';
+    }
+    
+    var items = document.querySelectorAll('.track-item');
+    items.forEach(function(el, i){
+      if(i === s.track) el.classList.add('active');
+      else el.classList.remove('active');
+    });
+    if(modalOpen) pollBtDevices();
+  }).catch(function(){}).then(nextPoll);
+}
+
+function pollBtDevices(){
+  fetch('/api/bt_devices').then(function(r){return r.json()}).then(function(d){
+    var ul = $('btDevList');
+    ul.innerHTML = '';
+    if(!d.items || d.items.length === 0){
+      var empty = document.createElement('li');
+      empty.style.cssText = 'font-size:12px;color:var(--text-sub);padding:6px 2px';
+      empty.textContent = d.scanning ? 'Searching for devices in pairing mode...' : 'No nearby speakers seen yet. Put AirPods in pairing mode & tap Scan.';
+      ul.appendChild(empty);
+      return;
+    }
+    d.items.forEach(function(dev){
+      var li = document.createElement('li');
+      li.className = 'dev-item';
+      li.innerHTML = '<span>' + dev.name + '</span><span class="dev-rssi">' + dev.rssi + ' dBm · Connect</span>';
+      li.onclick = function(){
+        $('targetInput').value = dev.name;
+        saveTarget();
+      };
+      ul.appendChild(li);
+    });
+  }).catch(function(){});
+}
+
+function scanBt(){
+  post('/api/bt_scan').then(pollBtDevices);
+}
+
+function loadTracks(offset){
+  fetch('/api/tracks?offset=' + offset + '&limit=50').then(function(r){return r.json()}).then(function(d){
+    if(offset === 0){ tracks = []; $('trackList').innerHTML = ''; }
+    d.items.forEach(function(item){
+      tracks[item.i] = item;
+      var li = document.createElement('li');
+      li.className = 'track-item' + (state.track === item.i ? ' active' : '');
+      li.innerHTML = '<span class="title">' + item.name + '</span><span>&#9654;</span>';
+      li.onclick = function(){
+        state.track = item.i;
+        state.state = 'playing';
+        $('curTitle').textContent = item.name;
+        renderPlayIcon(true);
+        post('/api/track?i=' + item.i);
+      };
+      $('trackList').appendChild(li);
+    });
+    if(d.offset + d.items.length < d.total && d.items.length > 0){
+      loadTracks(d.offset + d.items.length);
+    }
+  });
+}
+
+$('vol').oninput = function(){
+  draggingVol = true;
+  var v = this.value;
+  $('volLabel').textContent = v + '%';
+  if(volTimer) clearTimeout(volTimer);
+  volTimer = setTimeout(function(){
+    fetch('/api/volume?v=' + v, {method:'POST'}).then(function(){
+      setTimeout(function(){ draggingVol = false; }, 400);
+    }).catch(function(){ draggingVol = false; });
+  }, 120);
+};
+
+function openSettings(){
+  modalOpen = true;
+  $('targetInput').value = state.btDevice || '';
+  $('settingsModal').classList.add('open');
+  pollBtDevices();
+}
+function closeSettings(){
+  modalOpen = false;
+  $('settingsModal').classList.remove('open');
+}
+function saveTarget(){
+  var val = $('targetInput').value.trim();
+  if(!val) return;
+  var pin = $('pinInput').value.trim();
+  if(pin && !/^[0-9]{1,16}$/.test(pin)) return;
+  // PIN first, so it is in place when the navi asks for it.
+  var pinReq = pin ? post('/api/bt_pin', 'pin=' + pin) : Promise.resolve();
+  pinReq.then(function(){
+    return post('/api/bt_target', 'name=' + encodeURIComponent(val));
+  }).then(function(){
+    closeSettings();
+  });
+}
+
+loadTracks(0);
+pollState();
+</script>
+</body>
+</html>

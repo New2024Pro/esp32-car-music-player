@@ -21,6 +21,14 @@ inline bool parseLong(const std::string& s, long& out) {
 
 inline int clampVolume(long v) { return v < 0 ? 0 : (v > 100 ? 100 : (int)v); }
 
+// Bluetooth PIN / passkey: 1..maxLen ASCII digits, nothing else (no spaces or sign).
+inline bool isDigitCode(const std::string& s, size_t maxLen) {
+  if (s.empty() || s.size() > maxLen) return false;
+  for (char c : s)
+    if (c < '0' || c > '9') return false;
+  return true;
+}
+
 // Escapes for use inside a JSON string literal. UTF-8 bytes pass through unchanged.
 inline std::string jsonEscape(const std::string& s) {
   std::string o;

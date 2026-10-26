@@ -1,5 +1,6 @@
 #include "DecoderWorker.h"
 #include <SD.h>
+#include <SD_MMC.h>
 
 DecoderWorker* DecoderWorker::inst_ = nullptr;
 
@@ -76,7 +77,12 @@ void DecoderWorker::playFile(int index) {
     return;
   }
   std::string path = "/" + (*tracks_)[index];
-  File f = SD.open(path.c_str(), FILE_READ);
+  File f;
+  if (SD_MMC.cardType() != CARD_NONE) {
+    f = SD_MMC.open(path.c_str(), FILE_READ);
+  } else {
+    f = SD.open(path.c_str(), FILE_READ);
+  }
   if (!f) {
     setError("cannot open file");
     status_ = IO_ERROR;

@@ -14,7 +14,7 @@ void Controller::begin(DecoderWorker& w, BtAudio& bt, RingBuffer& ring, const st
   q_ = xQueueCreate(16, sizeof(Command));
   mu_ = xSemaphoreCreateMutex();
   bt_->setVolume(volume_);
-  xTaskCreatePinnedToCore(&Controller::taskEntry, "controller", 6144, this, 2, nullptr, 1);
+  xTaskCreatePinnedToCore(&Controller::taskEntry, "controller", 8192, this, 2, nullptr, 1);
 }
 
 void Controller::setError(const std::string& e) {
@@ -33,6 +33,11 @@ StateSnapshot Controller::snapshot() const {
   s.error = err_;
   xSemaphoreGive(mu_);
   s.bt = bt_->state();
+  BtAudio::PairInfo p = bt_->pairing();
+  s.pair = p.kind;
+  s.pairCode = p.code;
+  s.pairMsg = p.msg;
+  s.btDevice = bt_->connectedDeviceName();
   s.trackCount = (int)tracks_->size();
   s.underruns = bt_->underruns();
   s.minFreeHeap = ESP.getMinFreeHeap();
@@ -109,6 +114,13 @@ void Controller::startTrack(int idx, int dir) {
     stopPlayback();
     return;
   }
+  int targetIdx = (idx >= 0 && (size_t)idx < n) ? idx : 0;
+  xSemaphoreTake(mu_, portMAX_DELAY);
+  cur_ = targetIdx;
+  play_ = PlayState::Playing;
+  err_.clear();
+  xSemaphoreGive(mu_);
+
   size_t probes = 0;
   bool infra = false;
   int i = skipPolicy(idx, dir, n, [&](int k) {
@@ -155,8 +167,19 @@ void Controller::resume() {
   xSemaphoreGive(mu_);
 }
 
+void Controller::setVolumeImmediate(int arg) {
+  int v = clampVolume(arg);
+  xSemaphoreTake(mu_, portMAX_DELAY);
+  volume_ = v;
+  xSemaphoreGive(mu_);
+  bt_->setVolume((uint8_t)v);
+}
+
 void Controller::handle(Command c) {
   switch (c.cmd) {
+    case Cmd::BtConnect:
+      bt_->triggerScan();
+      break;
     case Cmd::Play:
       if (play_ == PlayState::Paused) resume();
       else if (play_ == PlayState::Stopped) startTrack(cur_ < 0 ? 0 : cur_, +1);
@@ -181,11 +204,7 @@ void Controller::handle(Command c) {
       else startTrack(c.arg, +1);
       break;
     case Cmd::Volume: {
-      int v = clampVolume(c.arg);
-      xSemaphoreTake(mu_, portMAX_DELAY);
-      volume_ = v;
-      xSemaphoreGive(mu_);
-      bt_->setVolume((uint8_t)v);
+      setVolumeImmediate(c.arg);
       break;
     }
   }
@@ -193,6 +212,14 @@ void Controller::handle(Command c) {
 
 // Advance when the file ended: stop counting underruns, let the ring play out, then move on.
 void Controller::tick() {
+  if (!autoPlayed_ && bt_->state() == BtState::Connected) {
+    autoPlayed_ = true;
+    if (play_ == PlayState::Stopped && !tracks_->empty()) {
+      Serial.println("[ctl] Bluetooth connected -> auto-starting playback");
+      startTrack(cur_ < 0 ? 0 : cur_, +1);
+      return;
+    }
+  }
   if (play_ != PlayState::Playing) return;
   DecoderWorker::Result r = w_->status();
   if (r != DecoderWorker::ENDED && r != DecoderWorker::IO_ERROR) return;

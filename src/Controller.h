@@ -16,6 +16,14 @@ class Controller {
   void begin(DecoderWorker& w, BtAudio& bt, RingBuffer& ring, const std::vector<std::string>& tracks,
              const std::string& initialError);
   bool enqueue(Command c) { return xQueueSend(q_, &c, 0) == pdTRUE; }  // false: queue full
+  void setVolumeImmediate(int v);
+  void setBtTarget(const std::string& name) { bt_->setTargetDevice(name); }
+  void triggerBtScan() { bt_->triggerScan(); }
+  bool isBtScanning() const { return bt_->isScanning(); }
+  std::vector<DiscoveredBtDevice> btDevices() const { return bt_->discoveredDevices(); }
+  bool answerBtPairing(bool accept, const std::string& code) { return bt_->answerPairing(accept, code); }
+  bool setBtPin(const std::string& pin) { return bt_->setPin(pin); }
+  void btQuietFor(uint32_t ms) { bt_->quietFor(ms); }
   StateSnapshot snapshot() const;
   const std::vector<std::string>& tracks() const { return *tracks_; }
 
@@ -43,5 +51,6 @@ class Controller {
   int volume_ = 50;
   std::string err_;
   uint32_t endWaitStart_ = 0;  // 0 = not waiting for the ring to play out
+  bool autoPlayed_ = false;
 };
 

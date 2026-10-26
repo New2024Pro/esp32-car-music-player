@@ -22,6 +22,17 @@ TEST(parseLong_rejects_garbage) {
   CHECK_EQ(v, 123);                              // untouched on failure
 }
 
+TEST(isDigitCode_pin_and_passkey) {
+  CHECK(isDigitCode("0000", 16));
+  CHECK(isDigitCode("123456", 6));
+  CHECK(isDigitCode("0123456789012345", 16));
+  CHECK(!isDigitCode("", 16));
+  CHECK(!isDigitCode("1234567", 6));
+  CHECK(!isDigitCode("12 34", 16));
+  CHECK(!isDigitCode("-123", 16));
+  CHECK(!isDigitCode("12a4", 16));
+}
+
 TEST(clampVolume_bounds) {
   CHECK_EQ(clampVolume(-5), 0);
   CHECK_EQ(clampVolume(0), 0);
