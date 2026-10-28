@@ -31,6 +31,10 @@
 // Name this ESP32 shows in the car navi's device list.
 #define BT_LOCAL_NAME "ESP32 Music"
 
+// Volume (0-100) on first boot; afterwards the last volume set is remembered. The ESP32 scales
+// the audio before the navi's own volume, so a low value here makes the navi sound weak.
+#define DEFAULT_VOLUME 70
+
 // Pairing (first connection to a car navi). The navi shows a code; the ESP32 reports the
 // pending step on the web UI and serial and waits for the user:
 //   - "Is the code the same?" (Secure Simple Pairing): BOOT click / web Confirm / serial 'y'

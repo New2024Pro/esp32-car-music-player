@@ -12,6 +12,7 @@
 #include "config.h"
 #include "WebApi.h"
 #include "Params.h"
+#include "SdFiles.h"
 
 #ifndef ENABLE_WIFI
 #define ENABLE_WIFI 1
@@ -41,15 +42,7 @@ static void scanSd(std::string& err) {
       sdOk = true;
       Serial.printf("[sd] On-board SD_MMC detected! Type: %d, Size: %lluMB\n",
                     cardType, SD_MMC.cardSize() / (1024 * 1024));
-      std::vector<std::string> names;
-      File root = SD_MMC.open("/");
-      for (File e = root.openNextFile(); e; e = root.openNextFile()) {
-        if (!e.isDirectory()) {
-          std::string fname = e.name();
-          if (isTrackName(fname)) names.push_back(fname);
-        }
-      }
-      tracks = buildTrackList(names);
+      tracks = listTrackFiles();
     }
   }
 
@@ -62,15 +55,7 @@ static void scanSd(std::string& err) {
     if (SD.begin(PIN_SD_CS, SPI, 4000000)) {
       sdOk = true;
       Serial.println("[sd] SPI SD detected!");
-      std::vector<std::string> names;
-      File root = SD.open("/");
-      for (File e = root.openNextFile(); e; e = root.openNextFile()) {
-        if (!e.isDirectory()) {
-          std::string fname = e.name();
-          if (isTrackName(fname)) names.push_back(fname);
-        }
-      }
-      tracks = buildTrackList(names);
+      tracks = listTrackFiles();
     }
   }
 
@@ -80,8 +65,11 @@ static void scanSd(std::string& err) {
     return;
   }
 
+  uint64_t total = SD_MMC.cardType() != CARD_NONE ? SD_MMC.totalBytes() : SD.totalBytes();
+  Serial.printf("[sd] volume %llu MB, %llu MB free\n", total >> 20, sdFreeBytes() >> 20);
   if (tracks.empty()) err = "no tracks";
   Serial.printf("[sd] %u tracks loaded\n", (unsigned)tracks.size());
+  for (size_t i = 0; i < tracks.size(); i++) Serial.printf("[sd] track %u: %s\n", (unsigned)(i + 1), tracks[i].c_str());
 }
 
 void setup() {

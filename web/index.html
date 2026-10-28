@@ -117,6 +117,21 @@ input[type=range]:disabled{opacity:0.35}
 .track-item:hover{background:rgba(255,255,255,0.05)}
 .track-item.active{background:rgba(255,255,255,0.12);color:#30d158;font-weight:600}
 .track-item .title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:12px}
+.del-btn{
+  background:none;border:none;color:var(--text-sub);font-size:14px;cursor:pointer;
+  padding:4px 8px;border-radius:6px;flex-shrink:0;
+}
+.del-btn:hover{background:rgba(255,69,58,0.2);color:#ff453a}
+.section-head{display:flex;justify-content:space-between;align-items:center}
+.add-btn{position:relative;overflow:hidden;padding:6px 12px}
+.add-btn input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.upload-box{display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:10px;background:rgba(255,255,255,0.06)}
+.upload-text{font-size:12px;white-space:pre-wrap;word-break:break-word}
+.upload-track{height:6px;border-radius:3px;background:rgba(255,255,255,0.15);overflow:hidden}
+.upload-bar{height:100%;width:0;background:var(--accent);transition:width 0.2s}
+.name-hint{font-size:11px;color:var(--text-sub);line-height:1.4}
+.sd-free{text-transform:none;letter-spacing:0;font-weight:400;font-size:12px}
+.sd-free.low{color:#ff453a}
 .modal{
   position:fixed;top:0;left:0;right:0;bottom:0;
   background:rgba(0,0,0,0.7);backdrop-filter:blur(15px);
@@ -222,8 +237,18 @@ input[type=range]:disabled{opacity:0.35}
   </div>
 
   <div class="playlist-section">
-    <div class="section-title">Tracks on SD</div>
+    <div class="section-head">
+      <div class="section-title">Tracks on SD <span id="sdFree" class="sd-free"></span></div>
+      <label class="btn-m btn-cancel add-btn">+ Add songs
+        <input type="file" id="fileIn" accept=".mp3,audio/mpeg" multiple onchange="addSongs(this.files)">
+      </label>
+    </div>
+    <div class="upload-box" id="uploadBox" style="display:none">
+      <div class="upload-text" id="uploadText"></div>
+      <div class="upload-track"><div class="upload-bar" id="uploadBar"></div></div>
+    </div>
     <ul class="track-list" id="trackList"></ul>
+    <div class="name-hint">Name files <b>NN - Artist - Title.mp3</b> (or tag them). MP3, 44.1 kHz. Playback pauses while uploading.</div>
   </div>
 </div>
 
@@ -374,6 +399,10 @@ function pollState(){
     posAt = Date.now();
     renderSeek();
     renderModes();
+    if(s.sdFreeMB !== undefined){
+      $('sdFree').textContent = '· ' + (s.sdFreeMB >= 1024 ? (s.sdFreeMB / 1024).toFixed(1) + ' GB' : s.sdFreeMB + ' MB') + ' free';
+      $('sdFree').className = 'sd-free' + (s.sdFreeMB < 20 ? ' low' : '');
+    }
     var pill = $('devPill');
     var isConn = s.bt == 'connected';
     pill.className = 'device-pill ' + (isConn ? 'connected' : '');
@@ -417,7 +446,9 @@ function pollBtDevices(){
     d.items.forEach(function(dev){
       var li = document.createElement('li');
       li.className = 'dev-item';
-      li.innerHTML = '<span>' + dev.name + '</span><span class="dev-rssi">' + dev.rssi + ' dBm · Connect</span>';
+      li.innerHTML = '<span></span><span class="dev-rssi"></span>';
+      li.firstChild.textContent = dev.name;  // names come from nearby devices: text, never HTML
+      li.lastChild.textContent = dev.rssi + ' dBm · Connect';
       li.onclick = function(){
         $('targetInput').value = dev.name;
         saveTarget();
@@ -431,6 +462,78 @@ function scanBt(){
   post('/api/bt_scan').then(pollBtDevices);
 }
 
+// Add songs: upload mode (stops playback, frees the card and the radio), one POST per file with
+// progress, then end upload mode (the ESP32 rescans and resumes what was playing).
+function uploadStatus(text, frac){
+  $('uploadBox').style.display = text ? '' : 'none';
+  $('uploadText').textContent = text || '';
+  $('uploadBar').style.width = Math.round((frac || 0) * 100) + '%';
+}
+function waitUploadMode(){
+  return new Promise(function(resolve, reject){
+    var tries = 0;
+    (function check(){
+      getJson('/api/state').then(function(s){
+        if(s.uploading) return resolve();
+        if(++tries > 20) return reject(new Error('the ESP32 did not stop playback'));
+        setTimeout(check, 300);
+      }).catch(function(){
+        if(++tries > 20) return reject(new Error('the ESP32 is not answering'));
+        setTimeout(check, 300);
+      });
+    })();
+  });
+}
+function uploadOne(file, i, total){
+  return new Promise(function(resolve){
+    var x = new XMLHttpRequest();
+    x.open('POST', '/api/upload');
+    x.upload.onprogress = function(e){
+      if(e.lengthComputable) uploadStatus('Uploading ' + (i + 1) + ' of ' + total + ': ' + file.name, e.loaded / e.total);
+    };
+    x.onload = function(){
+      var j = {};
+      try { j = JSON.parse(x.responseText); } catch(err) {}
+      resolve(x.status == 200 ? null : file.name + ': ' + (j.error || ('HTTP ' + x.status)));
+    };
+    x.onerror = function(){ resolve(file.name + ': connection lost'); };
+    var fd = new FormData();
+    fd.append('file', file, file.name);
+    x.send(fd);
+  });
+}
+function addSongs(files){
+  files = Array.prototype.slice.call(files);
+  $('fileIn').value = '';
+  if(!files.length) return;
+  var errors = [];
+  uploadStatus('Stopping playback…', 0);
+  post('/api/upload/begin').then(waitUploadMode).then(function(){
+    var chain = Promise.resolve();
+    files.forEach(function(f, i){
+      chain = chain.then(function(){
+        if(!/\.mp3$/i.test(f.name)){ errors.push(f.name + ': not an .mp3 file'); return; }
+        if(state.sdFreeMB !== undefined && f.size + 65536 > state.sdFreeMB * 1048576){
+          errors.push(f.name + ': not enough space on the SD card (' + state.sdFreeMB + ' MB free, needs ' +
+                      Math.ceil(f.size / 1048576) + ' MB)');
+          return;
+        }
+        return uploadOne(f, i, files.length).then(function(err){ if(err) errors.push(err); });
+      });
+    });
+    return chain;
+  }).catch(function(e){
+    errors.push(e.message);
+  }).then(function(){
+    return post('/api/upload/end');
+  }).then(function(){
+    var ok = files.length - errors.length;
+    uploadStatus(ok + ' of ' + files.length + ' song(s) added.' + (errors.length ? '\n' + errors.join('\n') : ''), 1);
+    setTimeout(function(){ loadTracks(0); }, 800);
+    setTimeout(function(){ if(!errors.length) uploadStatus(''); }, 6000);
+  });
+}
+
 function loadTracks(offset){
   getJson('/api/tracks?offset=' + offset + '&limit=50').then(function(d){
     if(offset === 0){ tracks = []; $('trackList').innerHTML = ''; }
@@ -438,8 +541,13 @@ function loadTracks(offset){
       tracks[item.i] = item;
       var li = document.createElement('li');
       li.className = 'track-item' + (state.track === item.i ? ' active' : '');
-      li.innerHTML = '<span class="title"></span><span>&#9654;</span>';
+      li.innerHTML = '<span class="title"></span><button class="del-btn" aria-label="Delete">&#10005;</button>';
       li.firstChild.textContent = item.name;  // file names are text, not HTML
+      li.lastChild.onclick = function(e){
+        e.stopPropagation();
+        if(!confirm('Delete "' + item.name + '" from the SD card?')) return;
+        post('/api/delete?i=' + item.i).then(function(){ setTimeout(function(){ loadTracks(0); }, 600); });
+      };
       li.onclick = function(){
         state.track = item.i;
         state.state = 'playing';

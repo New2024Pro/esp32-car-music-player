@@ -4,7 +4,7 @@ Play MP3s from an SD card through your car's navi or Bluetooth headphones, with 
 
 The ESP32 acts as a Bluetooth audio source, the same role a phone plays when it streams music to a car. It pairs with the navi, streams the SD card's MP3s, and responds to the navi's and the steering wheel's track buttons. Your phone stays free, and the music library lives in the car.
 
-**Status:** working on a Toyota **NSZN-W64T** navi and on AirPods Pro. Other head units are untested, which is where help is most needed (see [Contributors wanted](#contributors-wanted)).
+**Status:** working on a Toyota **NSZN-W64T** navi (audio, buttons, song titles) and on AirPods Pro. Other head units are untested, which is where help is most needed (see [Contributors wanted](#contributors-wanted)).
 
 ## Features
 
@@ -14,9 +14,11 @@ The ESP32 acts as a Bluetooth audio source, the same role a phone plays when it 
 | Car navi pairing | Secure Simple Pairing and legacy PIN; "same code?" can be auto-confirmed |
 | Navi-initiated connections | The navi connects to the ESP32 on registration and on every ignition |
 | Navi / steering-wheel / AirPods buttons (AVRCP) | Play, stop/pause, next, previous, fast-forward, rewind |
+| Song title, artist, track number and length on the navi | From ID3 tags, else the file name; uses a patched Bluetooth file, see below |
 | Automatic reconnect | Backed-off reconnect to the saved device; the navi can also reconnect by itself |
 | Web remote over Wi-Fi hotspot | Track list, seek bar, volume, shuffle, repeat (off / all / one), pairing prompts |
 | SD card library | MP3s in the card's root folder, 44.1 kHz stereo |
+| Add / delete songs over Wi-Fi | "+ Add songs" on the web page (several at once, with progress); non-MP3 and non-44.1 kHz files are refused with the reason; free space shown |
 | Physical and serial control | BOOT button: click = play/pause, hold = next / scan; serial console commands |
 
 ## Hardware
@@ -53,11 +55,29 @@ Without a preset: join the `ESP32-Music` Wi-Fi, open `http://192.168.4.1`, tap t
 
 [docs/HARDWARE_TEST.md](docs/HARDWARE_TEST.md) has the full test procedure.
 
+## Naming your MP3 files
+
+Song info comes from the MP3's ID3 tags (title, artist, album) when the file has them. Otherwise the file name is used, in this format:
+
+```
+NN - Artist - Title.mp3        e.g.  01 - SB19 - MAPA.mp3
+```
+
+- `NN` sets the play order (files play in name order) and is not shown.
+- `Artist - Title` is split into the navi's artist and title fields. Any other name is shown whole.
+- Emoji are removed before the navi sees the title; older navis cannot display them. Japanese and other text is kept.
+- Use 44.1 kHz stereo MP3s; other sample rates are skipped.
+
+## Song titles on the navi: patched Bluetooth file
+
+The Bluetooth stack inside arduino-esp32 (ESP-IDF 4.4.5) rejects a head unit's request for the song title. `lib/avrc_metadata/` holds a patched copy of that one file, `btc_avrc.c`, which the build links instead of the precompiled one. Every change is marked `PATCH`. The file and the vendored ESP-IDF headers are Apache-2.0 (`lib/avrc_metadata/LICENSE.esp-idf`). If you change the arduino-esp32 version, this file must match its ESP-IDF version.
+
 ## Known limitations
 
-- **No song titles on the navi.** The Bluetooth stack in this Arduino core cannot answer the navi's track-info (AVRCP metadata) requests.
 - **The web page stalls while audio streams.** Wi-Fi and Bluetooth share one radio and the internal RAM is nearly full. The page works while paused or disconnected.
-- **44.1 kHz stereo MP3 only.** Other sample rates are skipped.
+- **44.1 kHz stereo MP3 only.** Other sample rates are skipped. Many downloaded songs are 48 kHz: convert them first (Audacity: File → Export Audio → Sample Rate 44100 Hz). Files renamed from M4A/AAC are not MP3s and are refused.
+- **Uploads pause playback** and run at Wi-Fi speed: a 65 MB file takes several minutes.
+- **SD cards reused from other devices** may hold a small partition only (the boot log prints the volume size). Reformat the whole card as FAT32 with SD Card Formatter.
 - **Positions in VBR files are estimates.** Seek uses the first frame's bitrate.
 - **No hands-free calling (HFP).** Navis list the phone service as unsupported; that is expected.
 
@@ -65,7 +85,7 @@ Without a preset: join the `ESP32-Music` Wi-Fi, open `http://192.168.4.1`, tap t
 
 This project aims to replace the smartphone as a car's music source with a small, cheap, always-in-the-car device. Help is welcome, especially from people with experience in:
 
-- **Bluetooth Classic / ESP-IDF Bluedroid:** AVRCP metadata and play-status notifications (song titles on the navi), A2DP source quirks.
+- **Bluetooth Classic / ESP-IDF Bluedroid:** A2DP source quirks, AVRCP browsing (track lists on the navi), keeping the `btc_avrc.c` patch current.
 - **Car head units:** testing with other navis (Toyota, Honda, Nissan, Pioneer, Kenwood, Panasonic, aftermarket units) and reporting what works.
 - **ESP32 memory and Wi-Fi / Bluetooth coexistence:** moving Bluetooth and Wi-Fi buffers to PSRAM (a custom ESP-IDF build), so the web page works while streaming.
 - **Audio decoding:** resampling 48 kHz files, accurate VBR seeking (Xing/VBRI headers), more formats.

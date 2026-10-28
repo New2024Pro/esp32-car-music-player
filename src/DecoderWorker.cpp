@@ -2,6 +2,7 @@
 #include <SD.h>
 #include <SD_MMC.h>
 #include "Mp3Info.h"
+#include <esp_heap_caps.h>
 
 DecoderWorker* DecoderWorker::inst_ = nullptr;
 
@@ -77,6 +78,33 @@ void DecoderWorker::handlePcm(MP3FrameInfo& info, const short* pcm, size_t len) 
   if (status_ == OPENING) status_ = PLAYING;
 }
 
+// Title / artist / album from the ID3v2 tag. Text frames sit at the start of the tag (cover art
+// usually follows), so the first 4 KiB is enough. Buffer in PSRAM: the decoder stack is tight.
+void DecoderWorker::readTags(File& f, const uint8_t* head, size_t headLen) {
+  Id3Tags t;
+  uint32_t start = dataStart_.load();
+  size_t want = start < 4096 ? start : 4096;
+  if (want >= 10 && headLen == 10) {
+    uint8_t* tag = (uint8_t*)heap_caps_malloc(want, MALLOC_CAP_SPIRAM);
+    if (tag) {
+      memcpy(tag, head, 10);
+      size_t got = 10 + f.read(tag + 10, want - 10);
+      parseId3v2(tag, got, t);
+      free(tag);
+    }
+  }
+  xSemaphoreTake(errMutex_, portMAX_DELAY);
+  tags_ = t;
+  xSemaphoreGive(errMutex_);
+}
+
+Id3Tags DecoderWorker::tags() const {
+  xSemaphoreTake(errMutex_, portMAX_DELAY);
+  Id3Tags t = tags_;
+  xSemaphoreGive(errMutex_);
+  return t;
+}
+
 void DecoderWorker::playFile(int index, uint32_t byteOffset) {
   abort_ = false;
   fmtChecked_ = false;
@@ -106,6 +134,7 @@ void DecoderWorker::playFile(int index, uint32_t byteOffset) {
   int head = f.read(buf, 10);
   dataStart_ = id3v2Size(buf, head > 0 ? (size_t)head : 0);
   fileSize_ = (uint32_t)f.size();
+  if (byteOffset == 0) readTags(f, buf, head > 0 ? (size_t)head : 0);  // a seek keeps the track's tags
   f.seek(byteOffset < fileSize_ ? byteOffset : 0);
   bytePos_ = (uint32_t)f.position();
   decoder_.begin();

@@ -6,6 +6,7 @@
 #include <vector>
 #include "Commands.h"
 #include "RingBuffer.h"
+#include "avrc_metadata.h"
 
 struct DiscoveredBtDevice {
   std::string name;
@@ -32,6 +33,30 @@ class CoexA2DPSource : public BluetoothA2DPSource {
     // registration ("車載機からの接続に切り替えます") and on every ignition, so accept that.
     // Not discoverable: the navi already knows our address.
     if (event == 0) esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+    // The library only announces volume_chg; announce play status and track change too, so the
+    // navi registers for them and re-reads the title on every track change (lib/avrc_metadata).
+    if (event == 0) {
+      esp_avrc_rn_evt_cap_mask_t evts = {0};
+      for (esp_avrc_rn_event_ids_t e : {ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_TRACK_CHANGE})
+        esp_avrc_rn_evt_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &evts, e);
+      if (esp_avrc_tg_set_rn_evt_cap(&evts) != ESP_OK) Serial.println("[bt] track-info notifications not accepted");
+    }
+  }
+
+  // Current values for the navi's notification registrations.
+  static inline std::atomic<uint8_t> rnPlayStatus{ESP_AVRC_PLAYBACK_STOPPED};
+  static inline std::atomic<uint8_t> rnVolume{64};  // 0..127
+
+  // INTERIM answers a registration with the current value; CHANGED tells the navi it changed (it
+  // then re-registers and, for a track change, asks for the new title). The stack only sends a
+  // CHANGED the navi has registered for.
+  static void sendRn(uint8_t evt, esp_avrc_rn_rsp_t type) {
+    esp_avrc_rn_param_t p;
+    memset(&p, 0, sizeof(p));
+    if (evt == ESP_AVRC_RN_PLAY_STATUS_CHANGE) p.playback = (esp_avrc_playback_stat_t)rnPlayStatus.load();
+    else if (evt == ESP_AVRC_RN_VOLUME_CHANGE) p.volume = rnVolume.load();
+    // ESP_AVRC_RN_TRACK_CHANGE: element id 0 = "a track is selected"
+    esp_avrc_tg_send_rn_rsp((esp_avrc_rn_event_ids_t)evt, type, &p);
   }
 
   // Link-level trace for diagnosing head units: which side connected, and why links dropped.
@@ -145,6 +170,13 @@ class CoexA2DPSource : public BluetoothA2DPSource {
       Serial.printf("[bt] avrcp remote-control link: %s\n", param->conn_stat.connected ? "up" : "down");
     else if (event == ESP_AVRC_TG_REMOTE_FEATURES_EVT)
       Serial.printf("[bt] avrcp remote features: 0x%x\n", (unsigned)param->rmt_feats.feat_mask);
+    else if (event == ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT) {
+      uint8_t id = param->reg_ntf.event_id;
+      Serial.printf("[bt] navi registered for %s\n", id == ESP_AVRC_RN_TRACK_CHANGE ? "track changes"
+                                                     : id == ESP_AVRC_RN_PLAY_STATUS_CHANGE ? "play status"
+                                                     : id == ESP_AVRC_RN_VOLUME_CHANGE ? "volume" : "other");
+      sendRn(id, ESP_AVRC_RN_RSP_INTERIM);
+    }
     // Act on the press; the release that follows carries no new information.
     if (event == ESP_AVRC_TG_PASSTHROUGH_CMD_EVT && param->psth_cmd.key_state == ESP_AVRC_PT_CMD_STATE_PRESSED &&
         remoteHook)
@@ -217,6 +249,19 @@ class BtAudio {
   void expectAudio(bool e) { expect_ = e; }
   // Pause / resume the Bluetooth audio stream itself (frees the radio while paused).
   void setStreaming(bool on) { a2dp_.setStreaming(on); }
+
+  // What the navi shows (lib/avrc_metadata answers its title / status requests). UTF-8.
+  void setTrackInfo(const std::string& title, const std::string& artist, const std::string& album,
+                    uint32_t trackNo, uint32_t numTracks, uint32_t lengthMs) {
+    avrc_md_set_track(title.c_str(), artist.c_str(), album.c_str(), trackNo, numTracks, lengthMs);
+    if (a2dp_.is_connected()) CoexA2DPSource::sendRn(ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_RSP_CHANGED);
+  }
+  // status: AVRC_MD_STOPPED / PLAYING / PAUSED
+  void setPlayStatus(uint8_t status, uint32_t posMs) {
+    avrc_md_set_play_status(status, posMs);
+    if (CoexA2DPSource::rnPlayStatus.exchange(status) != status && a2dp_.is_connected())
+      CoexA2DPSource::sendRn(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED);
+  }
 
   struct PairInfo {
     PairKind kind = PairKind::None;

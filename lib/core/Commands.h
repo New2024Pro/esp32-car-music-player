@@ -2,7 +2,11 @@
 #include <stdint.h>
 #include <string>
 
-enum class Cmd : uint8_t { Play, Pause, Next, Prev, Volume, Track, BtConnect, Seek, Shuffle, Repeat };
+enum class Cmd : uint8_t {
+  Play, Pause, Next, Prev, Volume, Track, BtConnect, Seek, Shuffle, Repeat,
+  UploadBegin, UploadEnd,  // stop playback and free the SD card for writing / rescan and resume
+  Delete                   // arg: track index
+};
 struct Command {
   Cmd cmd;
   // Volume: 0..100, Track: index, Seek: seconds into the track, Shuffle: 0/1,
@@ -51,9 +55,10 @@ struct StateSnapshot {
   int trackCount = 0;
   bool shuffle = false;
   Repeat repeat = Repeat::Off;
+  bool uploading = false;  // SD card reserved for uploads; playback commands are refused
   int posSec = -1;  // heard position in the current track; -1 unknown
   int durSec = -1;  // track length (exact for CBR, estimate for VBR); -1 unknown
-  int volume = 50;
+  int volume = 70;
   std::string error;
   uint32_t underruns = 0;
   uint32_t minFreeHeap = 0;

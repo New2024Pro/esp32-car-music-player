@@ -6,6 +6,8 @@
 #include <atomic>
 #include <string>
 #include <vector>
+#include <FS.h>
+#include "Id3.h"
 #include "RingBuffer.h"
 
 // Owns every SD file operation and every decoder reset. Writes decoded 44.1 kHz stereo
@@ -22,6 +24,8 @@ class DecoderWorker {
   bool waitStopped(uint32_t ms);     // true once the worker acked (file closed, idle)
   Result status() const { return status_.load(); }
   std::string lastError() const;
+  // ID3 title / artist / album of the current track (empty fields when the file has none).
+  Id3Tags tags() const;
 
   // Current file, for position / duration / seek. bitrate 0 until the first frame decodes.
   struct Progress {
@@ -37,6 +41,7 @@ class DecoderWorker {
   static void onPcm(MP3FrameInfo& info, short* pcm, size_t len, void*);
   void run();
   void playFile(int index, uint32_t byteOffset);
+  void readTags(fs::File& f, const uint8_t* head, size_t headLen);
   void handlePcm(MP3FrameInfo& info, const short* pcm, size_t len);
   void setError(const char* msg);
 
@@ -47,6 +52,7 @@ class DecoderWorker {
   SemaphoreHandle_t stopped_ = nullptr;
   SemaphoreHandle_t errMutex_ = nullptr;
   std::string err_;
+  Id3Tags tags_;  // guarded by errMutex_
   std::atomic<Result> status_{IDLE};
   std::atomic<int> openReq_{-1};
   std::atomic<uint32_t> openOffset_{0};

@@ -2,10 +2,13 @@
 #include <ESPAsyncWebServer.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include "Mp3Info.h"
 #include "Params.h"
+#include "SdFiles.h"
 #include "TrackList.h"
 #include "config.h"
 #include <LittleFS.h>
+#include <esp_heap_caps.h>
 
 static AsyncWebServer server(80);
 
@@ -27,7 +30,7 @@ static void enqueue(AsyncWebServerRequest* r, Controller& c, Cmd cmd, int arg = 
   sendJson(r, 200, "{\"ok\":true}");
 }
 
-static std::string stateJson(const StateSnapshot& s, bool scanning) {
+static std::string stateJson(const StateSnapshot& s, bool scanning, uint64_t sdFree) {
   char b[560];
   snprintf(b, sizeof b,
            "{\"state\":\"%s\",\"bt\":\"%s\",\"btScanning\":%s,\"btDevice\":\"%s\",\"pair\":\"%s\",\"pairCode\":\"%06u\","
@@ -36,7 +39,127 @@ static std::string stateJson(const StateSnapshot& s, bool scanning) {
            toStr(s.play), toStr(s.bt), scanning ? "true" : "false", jsonEscape(s.btDevice).c_str(), toStr(s.pair),
            (unsigned)s.pairCode, s.track, s.trackCount, s.posSec, s.durSec, s.shuffle ? "true" : "false", toStr(s.repeat), s.volume, (unsigned)s.underruns,
            (unsigned)s.minFreeHeap, s.resetReason);
-  return std::string(b) + jsonEscape(s.pairMsg) + "\",\"error\":\"" + jsonEscape(s.error) + "\"}";
+  return std::string(b) + jsonEscape(s.pairMsg) + "\",\"uploading\":" + (s.uploading ? "true" : "false") +
+         ",\"sdFreeMB\":" + std::to_string((unsigned)(sdFree >> 20)) +
+         ",\"error\":\"" + jsonEscape(s.error) + "\"}";
+}
+
+// One upload at a time: written to a temp file through a PSRAM buffer, checked, then renamed into
+// place, so an aborted or rejected upload never leaves half a song in the track list.
+struct Upload {
+  AsyncWebServerRequest* req = nullptr;
+  File f;
+  std::string name;
+  std::string err;
+  uint8_t* buf = nullptr;
+  size_t used = 0;
+  size_t total = 0;
+};
+static Upload up;
+static const char* kUploadTmp = "/.upload.tmp";
+// Internal, DMA-capable and word-aligned: the SD driver then writes straight from it. From a PSRAM
+// buffer it needs a fresh internal bounce buffer per sector, and with Wi-Fi receiving those
+// allocations fail mid-upload (sdmmc_write_blocks failed (257) = ESP_ERR_NO_MEM).
+static const size_t kUploadBuf = 4 * 1024;
+
+static bool uploadFlush() {
+  if (!up.used) return true;
+  bool ok = up.f.write(up.buf, up.used) == up.used;
+  up.used = 0;
+  return ok;
+}
+
+static void uploadFail(const std::string& why) {
+  if (up.err.empty()) up.err = why;
+  Serial.printf("[sd] upload rejected: %s: %s\n", up.name.c_str(), up.err.c_str());
+  if (up.f) up.f.close();
+  sdFs().remove(kUploadTmp);
+}
+
+static void uploadReset() {
+  if (up.f) up.f.close();
+  free(up.buf);
+  up = Upload();
+}
+
+// Plain file name: no folders, ends in .mp3, nothing FAT cannot store.
+static bool validUploadName(const std::string& n) {
+  if (n.empty() || n.size() > 120 || n[0] == '.' || !isTrackName(n)) return false;
+  for (char c : n)
+    if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+      return false;
+  return true;
+}
+
+// Body chunks of POST /api/upload (multipart, field "file"). Runs on the async_tcp task.
+static void onUploadChunk(Controller& ctl, AsyncWebServerRequest* r, const String& filename, size_t index,
+                          uint8_t* data, size_t len, bool final) {
+  if (index == 0) {
+    uploadReset();
+    up.req = r;
+    up.name = filename.c_str();
+    // A full card makes every write fail late and slowly (FATFS scans for a free cluster on each
+    // one, long enough to trip the async_tcp watchdog), so refuse up front. The request length
+    // includes ~200 bytes of multipart framing; keep 64 KB spare for directory and FAT growth.
+    uint64_t need = r->contentLength() + 64 * 1024, free = ctl.sdFree();
+    if (!ctl.uploading()) {
+      up.err = "not in upload mode: call /api/upload/begin first";
+    } else if (need > free) {
+      char m[128];
+      snprintf(m, sizeof m, "not enough space on the SD card: %u MB free, this song needs %u MB",
+               (unsigned)(free >> 20), (unsigned)((need >> 20) + 1));
+      up.err = m;
+    } else if (!validUploadName(up.name)) {
+      up.err = "file name must end in .mp3 and contain no / \\ : * ? \" < > |";
+    } else if (!(up.buf = (uint8_t*)heap_caps_malloc(kUploadBuf, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL))) {
+      up.err = "ESP32 out of memory: try again";
+    } else {
+      sdFs().remove(kUploadTmp);
+      up.f = sdFs().open(kUploadTmp, FILE_WRITE);
+      if (!up.f) up.err = "cannot write to the SD card";
+    }
+    Serial.printf("[sd] upload start: %s%s%s\n", up.name.c_str(), up.err.empty() ? "" : " -> ", up.err.c_str());
+  }
+  if (up.req != r || !up.err.empty()) return;  // rejected: swallow the rest of the body
+  ctl.touchUpload();
+  while (len > 0) {
+    size_t n = len < kUploadBuf - up.used ? len : kUploadBuf - up.used;
+    memcpy(up.buf + up.used, data, n);
+    up.used += n;
+    up.total += n;
+    data += n;
+    len -= n;
+    if (up.used == kUploadBuf && !uploadFlush()) return uploadFail("SD card full or write error");
+  }
+  if (!final) return;
+  if (!uploadFlush()) return uploadFail("SD card full or write error");
+  up.f.close();
+
+  // Only 44.1 kHz plays (Bluetooth SBC runs at 44.1 kHz); refuse others instead of skipping them later.
+  File chk = sdFs().open(kUploadTmp, FILE_READ);
+  uint8_t head[12];
+  size_t hn = chk ? chk.read(head, sizeof head) : 0;
+  const char* other = otherAudioFormat(head, hn);
+  uint32_t start = id3v2Size(head, hn);
+  if (chk) chk.seek(start < chk.size() ? start : 0);
+  uint32_t rate = 0;
+  for (int k = 0; chk && !other && !rate && k < 4; k++) {  // first 16 KB of audio, 4 KB at a time
+    size_t sn = chk.read(up.buf, kUploadBuf);
+    if (!sn) break;
+    rate = mp3FirstSampleRate(up.buf, sn);
+  }
+  if (chk) chk.close();
+  if (rate != 44100) {
+    char m[128];
+    if (other) snprintf(m, sizeof m, "this is a %s file renamed to .mp3. Convert it to MP3 (44.1 kHz), then upload again.", other);
+    else if (rate) snprintf(m, sizeof m, "%u Hz audio: only 44.1 kHz MP3s play. Convert it, then upload again.", (unsigned)rate);
+    else snprintf(m, sizeof m, "not an MP3 file (no MPEG audio found in the first 16 KB)");
+    return uploadFail(m);
+  }
+  std::string path = "/" + up.name;
+  sdFs().remove(path.c_str());  // replacing a song with the same name
+  if (!sdFs().rename(kUploadTmp, path.c_str())) return uploadFail("could not save the file on the SD card");
+  Serial.printf("[sd] uploaded %s (%u KB)\n", up.name.c_str(), (unsigned)(up.total / 1024));
 }
 
 // Form-body parameter first, then query string.
@@ -85,12 +208,12 @@ bool webApiBegin(Controller& ctl) {
     r->send(res);
   });
   server.on("/api/state", HTTP_GET,
-            [&ctl](AsyncWebServerRequest* r) { sendJson(r, 200, stateJson(ctl.snapshot(), ctl.isBtScanning())); });
+            [&ctl](AsyncWebServerRequest* r) { sendJson(r, 200, stateJson(ctl.snapshot(), ctl.isBtScanning(), ctl.sdFree())); });
   server.on("/api/tracks", HTTP_GET, [&ctl](AsyncWebServerRequest* r) {
     long off = 0, lim = 50;
     if (intParam(r, "offset", off, false) || intParam(r, "limit", lim, false))
       return sendErr(r, 400, "offset and limit must be integers");
-    Page p = pageTracks(ctl.tracks(), off, lim);
+    Page p = ctl.tracksPage(off, lim);
     std::string j = "{\"total\":" + std::to_string(p.total) + ",\"offset\":" + std::to_string(p.offset) + ",\"items\":[";
     for (size_t k = 0; k < p.items.size(); k++) {
       if (k) j += ',';
@@ -127,9 +250,31 @@ bool webApiBegin(Controller& ctl) {
   server.on("/api/track", HTTP_ANY, [&ctl](AsyncWebServerRequest* r) {
     long i = 0;
     if (intParam(r, "i", i, true)) return sendErr(r, 400, "i must be an integer");
-    if (i < 0 || (size_t)i >= ctl.tracks().size()) return sendErr(r, 400, "track index out of range");
+    if (i < 0 || (size_t)i >= ctl.trackCount()) return sendErr(r, 400, "track index out of range");
     enqueue(r, ctl, Cmd::Track, (int)i);
   });
+  server.on("/api/delete", HTTP_POST, [&ctl](AsyncWebServerRequest* r) {
+    long i = 0;
+    if (intParam(r, "i", i, true)) return sendErr(r, 400, "i must be an integer");
+    if (i < 0 || (size_t)i >= ctl.trackCount()) return sendErr(r, 400, "track index out of range");
+    enqueue(r, ctl, Cmd::Delete, (int)i);
+  });
+  // Upload: begin (stops playback; poll /api/state until "uploading":true), one POST per file, end.
+  server.on("/api/upload/begin", HTTP_POST, [&ctl](AsyncWebServerRequest* r) { enqueue(r, ctl, Cmd::UploadBegin); });
+  server.on("/api/upload/end", HTTP_POST, [&ctl](AsyncWebServerRequest* r) { enqueue(r, ctl, Cmd::UploadEnd); });
+  server.on(
+      "/api/upload", HTTP_POST,
+      [](AsyncWebServerRequest* r) {
+        bool mine = up.req == r;
+        std::string err = !mine ? "no file received" : up.err;
+        std::string name = up.name;
+        if (mine) uploadReset();
+        if (!err.empty()) return sendErr(r, 400, err.c_str());
+        sendJson(r, 200, "{\"ok\":true,\"name\":\"" + jsonEscape(name) + "\"}");
+      },
+      [&ctl](AsyncWebServerRequest* r, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+        onUploadChunk(ctl, r, filename, index, data, len, final);
+      });
   server.on("/api/bt_devices", HTTP_GET, [&ctl](AsyncWebServerRequest* r) {
     auto devs = ctl.btDevices();
     std::string j = std::string("{\"scanning\":") + (ctl.isBtScanning() ? "true" : "false") + ",\"items\":[";

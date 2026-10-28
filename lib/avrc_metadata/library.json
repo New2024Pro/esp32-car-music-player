@@ -1,0 +1,23 @@
+{
+  "name": "avrc_metadata",
+  "version": "1.0.0",
+  "description": "Patched ESP-IDF v4.4.5 btc_avrc.c: AVRCP target answers track info, play status and track-change notifications so car navis show song titles.",
+  "license": "Apache-2.0",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "build": {
+    "libArchive": false,
+    "srcFilter": "+<*.c> +<*.h>",
+    "flags": [
+      "-I idf/host/bluedroid/common/include",
+      "-I idf/host/bluedroid/btc/include",
+      "-I idf/host/bluedroid/btc/profile/std/include",
+      "-I idf/host/bluedroid/bta/include",
+      "-I idf/host/bluedroid/stack/include",
+      "-I idf/host/bluedroid/api/include/api",
+      "-I idf/common/include",
+      "-I idf/common/osi/include",
+      "-I idf/common/btc/include"
+    ]
+  }
+}

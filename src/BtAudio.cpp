@@ -269,7 +269,11 @@ BtState BtAudio::state() const {
   return BtState::Disconnected;
 }
 
-void BtAudio::setVolume(uint8_t pct) { a2dp_.set_volume((uint8_t)((pct > 100 ? 100 : pct) * 127 / 100)); }
+void BtAudio::setVolume(uint8_t pct) {
+  uint8_t v = (uint8_t)((pct > 100 ? 100 : pct) * 127 / 100);
+  a2dp_.set_volume(v);
+  CoexA2DPSource::rnVolume = v;  // reported to the navi if it registers for volume
+}
 
 bool BtAudio::begin(RingBuffer& ring) {
   ring_ = &ring;
