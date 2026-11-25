@@ -23,11 +23,22 @@ void Controller::begin(DecoderWorker& w, BtAudio& bt, RingBuffer& ring, std::vec
     uint8_t r = p.getUChar("repeat", 0);
     repeat_ = r == (uint8_t)Repeat::All ? Repeat::All : r == (uint8_t)Repeat::One ? Repeat::One : Repeat::Off;
     volume_ = clampVolume(p.getUChar("volume", DEFAULT_VOLUME));
+    savedName_ = p.getString("lastName", "").c_str();
+    savedSec_ = (int)p.getUInt("lastSec", 0);
     p.end();
   }
   shuffleShown_ = shuffle_;
   repeatShown_ = repeat_;
-  order_ = makeOrder(tracks.size(), shuffle_, -1, -1, [](uint32_t b) { return esp_random() % b; });
+  // Pick up where the car was switched off: the same song (found by name, the list may have
+  // changed), started at the saved second once Bluetooth connects.
+  for (size_t i = 0; i < tracks.size() && !savedName_.empty(); i++) {
+    if (tracks[i] == savedName_) {
+      cur_ = (int)i;
+      bootResumeSec_ = savedSec_;
+      Serial.printf("[ctl] resume point: track %d \"%s\" at %ds\n", cur_ + 1, savedName_.c_str(), savedSec_);
+    }
+  }
+  order_ = makeOrder(tracks.size(), shuffle_, cur_, -1, [](uint32_t b) { return esp_random() % b; });
   sdFree_ = sdFreeBytes();  // 0 when no card is mounted
   bt_->setVolume(volume_);
   xTaskCreatePinnedToCore(&Controller::taskEntry, "controller", 8192, this, 2, nullptr, 1);
@@ -138,7 +149,8 @@ void Controller::stopPlayback() {
 }
 
 // `pos` indexes the play order (shuffled or not); unplayable files are skipped along the order.
-void Controller::startTrack(int pos, int dir) {
+// `startSec` > 0 starts the requested track there (resume); ignored if that track was skipped.
+void Controller::startTrack(int pos, int dir, int startSec) {
   size_t n = tracks_->size();
   if (n == 0) {
     setError("no tracks");
@@ -179,11 +191,62 @@ void Controller::startTrack(int pos, int dir) {
   xSemaphoreGive(mu_);
   Serial.printf("[ctl] playing track %d (%d of %u in %s order)\n", cur_ + 1, i + 1, (unsigned)n,
                 shuffle_ ? "shuffled" : "normal");
+  // Resume: reopen at the saved second before any audio goes out. The prefill has decoded a
+  // frame, so the bitrate needed to turn seconds into a byte offset is known.
+  uint32_t startMs = 0;
+  DecoderWorker::Progress p = w_->progress();
+  if (startSec > 3 && i == targetPos && p.bitrate && p.size > p.start) {
+    uint32_t dur = mp3BytesToSec(p.size - p.start, p.bitrate);
+    uint32_t s = (uint32_t)startSec;
+    if (s + 2 > dur) s = dur > 2 ? dur - 2 : 0;
+    Serial.printf("[ctl] resuming at %us of %us\n", (unsigned)s, (unsigned)dur);
+    if (openTrack(cur_, p.start + mp3SecToBytes(s, p.bitrate)) != Ok) {
+      stopPlayback();  // openTrack already reported why
+      return;
+    }
+    startMs = s * 1000;
+  }
   endWaitStart_ = 0;
   bt_->setStreaming(true);
   bt_->expectAudio(true);
   publishTrack();
-  bt_->setPlayStatus(AVRC_MD_PLAYING, 0);
+  bt_->setPlayStatus(AVRC_MD_PLAYING, startMs);
+  saveResume(true);
+}
+
+// Remembers the current song and position in flash. Periodic calls (force=false) write only
+// when something changed; NVS spreads the writes over its pages, so every few seconds is fine.
+void Controller::saveResume(bool force) {
+  if (cur_ < 0 || play_ == PlayState::Stopped) return;
+  if (!force && millis() - lastResumeSave_ < RESUME_SAVE_MS) return;
+  lastResumeSave_ = millis();
+  const std::string& name = (*tracks_)[cur_];
+  int sec = snapshot().posSec;
+  if (sec < 0) sec = 0;
+  if (name == savedName_ && sec == savedSec_) return;
+  Preferences p;
+  if (!p.begin("mp3", false)) return;
+  if (name != savedName_) p.putString("lastName", name.c_str());
+  p.putUInt("lastSec", (uint32_t)sec);
+  p.end();
+  savedName_ = name;
+  savedSec_ = sec;
+  Serial.printf("[ctl] saved resume point: track %d at %ds (underruns so far %u)\n", cur_ + 1, sec,
+                (unsigned)bt_->underruns());
+}
+
+// The list played to the end: the next power-on starts again from the first song.
+void Controller::clearResume() {
+  if (savedName_.empty()) return;
+  Preferences p;
+  if (p.begin("mp3", false)) {
+    p.remove("lastName");
+    p.remove("lastSec");
+    p.end();
+  }
+  savedName_.clear();
+  savedSec_ = -1;
+  Serial.println("[ctl] end of list: resume point cleared");
 }
 
 // Title / artist / album (ID3, else the file name), number and length for the navi display.
@@ -214,6 +277,7 @@ void Controller::advance(bool autoAdvance) {
   int p = nextPos(from, n, repeat_, autoAdvance);
   if (p < 0) {
     stopPlayback();  // end of list, repeat off
+    clearResume();
     return;
   }
   if (shuffle_ && from >= 0 && p == 0 && (size_t)from + 1 >= n) {
@@ -273,6 +337,7 @@ void Controller::seek(int sec) {
   if (wasPaused) pause();
   else bt_->expectAudio(true);
   bt_->setPlayStatus(wasPaused ? AVRC_MD_PAUSED : AVRC_MD_PLAYING, s * 1000);
+  saveResume(true);
 }
 
 void Controller::pause() {
@@ -284,6 +349,7 @@ void Controller::pause() {
   play_ = PlayState::Paused;
   endWaitStart_ = 0;
   xSemaphoreGive(mu_);
+  saveResume(true);
 }
 
 void Controller::resume() {
@@ -386,10 +452,7 @@ void Controller::endUpload() {
   uploading_ = false;
   rescan(resumeName_);
   Serial.println("[sd] upload mode ended");
-  if (resumeAfterUpload_ && cur_ >= 0) {
-    startTrack(orderPosOf(order_, cur_), +1);
-    if (resumePosSec_ > 3) seek(resumePosSec_);
-  }
+  if (resumeAfterUpload_ && cur_ >= 0) startTrack(orderPosOf(order_, cur_), +1, resumePosSec_);
 }
 
 void Controller::deleteTrack(int idx) {
@@ -430,7 +493,10 @@ void Controller::handle(Command c) {
       break;
     case Cmd::Play:
       if (play_ == PlayState::Paused) resume();
-      else if (play_ == PlayState::Stopped) startTrack(currentPos(), +1);
+      else if (play_ == PlayState::Stopped) {
+        startTrack(currentPos(), +1, bootResumeSec_);
+        bootResumeSec_ = 0;
+      }
       break;
     case Cmd::Pause:
       if (play_ == PlayState::Playing) pause();
@@ -493,11 +559,13 @@ void Controller::tick() {
     autoPlayed_ = true;
     if (play_ == PlayState::Stopped && !tracks_->empty()) {
       Serial.println("[ctl] Bluetooth connected -> auto-starting playback");
-      startTrack(currentPos(), +1);
+      startTrack(currentPos(), +1, bootResumeSec_);
+      bootResumeSec_ = 0;
       return;
     }
   }
   if (play_ != PlayState::Playing) return;
+  saveResume(false);
   DecoderWorker::Result r = w_->status();
   if (r != DecoderWorker::ENDED && r != DecoderWorker::IO_ERROR) return;
   if (endWaitStart_ == 0) {
