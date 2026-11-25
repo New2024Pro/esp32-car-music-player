@@ -33,7 +33,7 @@
 
 // Volume (0-100) on first boot; afterwards the last volume set is remembered. The ESP32 scales
 // the audio before the navi's own volume, so a low value here makes the navi sound weak.
-#define DEFAULT_VOLUME 70
+#define DEFAULT_VOLUME 80
 
 // Pairing (first connection to a car navi). The navi shows a code; the ESP32 reports the
 // pending step on the web UI and serial and waits for the user:
@@ -68,5 +68,7 @@
 #define WORKER_STOP_TIMEOUT_MS 2000
 #define DRAIN_TIMEOUT_MS       200
 #define PREFILL_TIMEOUT_MS     4000
+// How often the playing song and position are saved to flash, to resume after a power cut.
+#define RESUME_SAVE_MS         30000
 #define OPEN_TIMEOUT_MS        3000
 

@@ -16,6 +16,8 @@ The ESP32 acts as a Bluetooth audio source, the same role a phone plays when it 
 | Navi / steering-wheel / AirPods buttons (AVRCP) | Play, stop/pause, next, previous, fast-forward, rewind |
 | Song title, artist, track number and length on the navi | From ID3 tags, else the file name; uses a patched Bluetooth file, see below |
 | Automatic reconnect | Backed-off reconnect to the saved device; the navi can also reconnect by itself |
+| Resume after power-off | The song and position are saved to flash every 30 s and on pause / seek / track change; at the next ignition playback continues there. Cleared when the list plays to the end |
+| Default volume | 80 %; the last volume set is remembered |
 | Web remote over Wi-Fi hotspot | Track list, seek bar, volume, shuffle, repeat (off / all / one), pairing prompts |
 | SD card library | MP3s in the card's root folder, 44.1 kHz stereo |
 | Add / delete songs over Wi-Fi | "+ Add songs" on the web page (several at once, with progress); non-MP3 and non-44.1 kHz files are refused with the reason; free space shown |
@@ -67,6 +69,16 @@ NN - Artist - Title.mp3        e.g.  01 - SB19 - MAPA.mp3
 - `Artist - Title` is split into the navi's artist and title fields. Any other name is shown whole.
 - Emoji are removed before the navi sees the title; older navis cannot display them. Japanese and other text is kept.
 - Use 44.1 kHz stereo MP3s; other sample rates are skipped.
+
+### Converting songs (Windows)
+
+`tools/convert-for-car.ps1` turns a folder of songs into car-ready MP3s: 320 kbps, 44.1 kHz, stereo, tags kept, cover art and emoji removed. It reads 48 kHz MP3s, M4A/AAC (also when renamed to .mp3), WAV, FLAC, OGG, Opus, WebM and WMA. It needs [ffmpeg](https://ffmpeg.org/) (`winget install Gyan.FFmpeg`).
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\convert-for-car.ps1 -In "$HOME\Music"
+```
+
+The converted files land in `Music\car`, ready to upload with **+ Add songs** or to copy to the SD card. Higher bit rates or lossless files gain nothing: Bluetooth (SBC) carries about 330 kbps.
 
 ## Song titles on the navi: patched Bluetooth file
 

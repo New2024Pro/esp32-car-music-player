@@ -54,7 +54,9 @@ class Controller {
   void tick();
   OpenResult openTrack(int idx, uint32_t byteOffset = 0);
   void seek(int sec);
-  void startTrack(int pos, int dir);
+  void startTrack(int pos, int dir, int startSec = 0);
+  void saveResume(bool force);
+  void clearResume();
   int currentPos() const;
   void advance(bool autoAdvance);
   void setShuffle(bool on);
@@ -94,5 +96,10 @@ class Controller {
   bool resumeAfterUpload_ = false;  // what was playing when the upload started
   std::string resumeName_;
   int resumePosSec_ = 0;
+  // Last song + position, kept in flash so a power cut (ignition off) resumes there on boot.
+  int bootResumeSec_ = 0;       // position to start the first auto-played track at
+  std::string savedName_;       // what flash holds now, to skip redundant writes
+  int savedSec_ = -1;
+  uint32_t lastResumeSave_ = 0;  // millis() of the last periodic save
 };
 
